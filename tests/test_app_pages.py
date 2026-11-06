@@ -97,3 +97,13 @@ def test_play_page_full_game_and_give_up():
     give_up.click().run()
     assert not at.exception, at.exception
     assert at.session_state["pl_games"][-1].end_reason == "gave_up"
+
+
+# ---- Batch C page -------------------------------------------------------------------------------------
+def test_baselines_page_renders_and_filters():
+    at = run("baselines.py")
+    assert not at.exception, at.exception
+    assert at.title[0].value.endswith("Baseline comparison")
+    assert any("No human baseline" in c.value for c in at.caption)  # nudges toward the Play page
+    at.multiselect[0].set_value([at.multiselect[0].options[0]]).run()  # single agent
+    assert not at.exception, at.exception

@@ -22,6 +22,7 @@ def summarize(episodes: list[Episode]) -> dict[str, float]:
     m: dict[str, float] = {}
     for k in sorted({e.n_hops for e in episodes if e.n_hops is not None}):
         eps = [e for e in episodes if e.n_hops == k]
+        m[f"n@{k}"] = len(eps)  # episodes behind success@k: lets the app draw honest error bars
         m[f"success@{k}"] = mean(e.success for e in eps)
         extras = [e.extra_steps for e in eps if e.success]
         if extras:

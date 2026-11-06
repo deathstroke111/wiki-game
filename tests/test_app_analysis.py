@@ -132,3 +132,45 @@ def test_flags_oracle_clean_and_garbage_flagged(src, graph):
                for _ in range(5)]
     warned = {f["name"] for f in diagnostic_flags(episodes_df(garbage), steps_df(garbage)) if f["status"] == "warn"}
     assert {"Invalid actions", "Format compliance", "Quitting via invalid actions"} <= warned
+
+
+# ---- Batch C ----------------------------------------------------------------------------------------
+from wikigame.webapp.analysis import (baseline_table, comparability_warnings, has_hop_results,  # noqa: E402
+                                      hop_n, latest_per_policy, policy_label, wilson_interval)
+
+
+def test_wilson_interval_properties():
+    lo, hi = wilson_interval(50, 100)
+    assert 0.40 < lo < 0.5 < hi < 0.60
+    assert wilson_interval(0, 10)[0] == 0.0 and wilson_interval(10, 10)[1] == 1.0
+    assert wilson_interval(1, 2)[1] - wilson_interval(1, 2)[0] > wilson_interval(50, 100)[1] - wilson_interval(50, 100)[0]
+    assert wilson_interval(0, 0)[0] != wilson_interval(0, 0)[0]  # nan when n == 0
+
+
+def test_policy_labels_and_hop_results(src):
+    assert [policy_label(r) for r in src.runs] == ["baseline-random", "baseline-oracle"]  # fixture has no config.policy
+    assert all(has_hop_results(r) for r in src.runs)
+
+
+def test_latest_per_policy_dedupes():
+    from wikigame.webapp.data import RunInfo
+
+    def mk(i, created):
+        return RunInfo(i, i, "local", "g", "baseline", "finished", [], created, {"policy": "random", "graph": "w"}, {"eval/success@1": 0.1})
+
+    kept = latest_per_policy([mk("old", "2026-11-01"), mk("new", "2026-11-05")])
+    assert [r.id for r in kept] == ["new"]
+
+
+def test_baseline_table_has_ci_and_n(src):
+    t = baseline_table(src.runs)
+    assert set(t.hop) == {1, 2, 3} and (t.ci_low <= t.success).all() and (t.success <= t.ci_high).all()
+    assert hop_n(src.runs[0], 1) == src.runs[0].summary["eval/n@1"] == 10  # n@k logged by summarize
+
+
+def test_comparability_warnings():
+    from wikigame.webapp.data import RunInfo
+
+    a = RunInfo("a", "a", "local", "", "baseline", "", [], "", {"graph": "x", "max_steps": 10}, {})
+    b = RunInfo("b", "b", "cuda", "", "baseline", "", [], "", {"graph": "y", "max_steps": 20}, {})
+    assert len(comparability_warnings([a, b])) == 2 and comparability_warnings([a, a]) == []

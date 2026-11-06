@@ -17,6 +17,10 @@ uv run streamlit run app/streamlit_app.py             # analysis webapp (reads W
 ```
 `WANDB_MODE=offline` + `wandb sync` works when the rented box has no network.
 
+## Webapp pages (`app/views/`)
+Runs (compare runs, curves) · Episodes (agent vs optimal path, graph view) · Failures (drift, wrong turns) ·
+Diagnostics (health flags, reward breakdown) · Baselines (random/oracle/human/model per hop) · Play (you play; optional upload as a human baseline).
+
 ## Layout
 - `src/wikigame/` graph, env, rollout, eval, tracking; `webapp/` data layer, analysis, plots for the app
 - `app/` Streamlit pages · `scripts/` runnable entry points · `tests/`

@@ -260,3 +260,74 @@ def diagnostic_flags(df: pd.DataFrame, steps: pd.DataFrame) -> list[dict]:
             f"flag above {THRESH['slow_extra_steps']}",
             "Reaches the target but not efficiently: a larger step cost or shaped distance reward may help.")
     return flags
+
+
+# ======================================================================================================
+# Batch C: baseline comparison
+# ======================================================================================================
+
+
+def wilson_interval(successes: float, n: float, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for a proportion; sensible for small n and p near 0 or 1."""
+    if not n:
+        return (float("nan"), float("nan"))
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def policy_label(run: RunInfo) -> str:
+    """Human-readable agent name: the baseline's policy ('random', 'oracle', 'human') or the experiment."""
+    if run.job_type in ("baseline", "human"):
+        return str(run.config.get("policy", run.group or run.name))
+    return run.group or run.name
+
+
+def has_hop_results(run: RunInfo) -> bool:
+    return any(HOP_METRIC.match(k) and HOP_METRIC.match(k)["name"] == "success" for k in run.summary)
+
+
+def latest_per_policy(runs: list[RunInfo]) -> list[RunInfo]:
+    """Keep the newest run for each (agent, machine, graph): hides accidental duplicate runs."""
+    best: dict[tuple, RunInfo] = {}
+    for r in runs:
+        k = (policy_label(r), r.machine, r.graph)
+        if k not in best or r.created_at > best[k].created_at:
+            best[k] = r
+    return list(best.values())
+
+
+def hop_n(run: RunInfo, hop: int) -> float | None:
+    """Episodes behind success@hop: logged as eval/n@hop; older runs fall back to config.n_per_hop."""
+    n = run.summary.get(f"eval/n@{hop}")
+    return n if n is not None else run.config.get("n_per_hop")
+
+
+def baseline_table(runs: list[RunInfo]) -> pd.DataFrame:
+    """Long frame: agent, machine, hop, success (+95% CI), extra_steps, n."""
+    rows = []
+    for r in runs:
+        for k in sorted(int(HOP_METRIC.match(x)["hop"]) for x in r.summary if HOP_METRIC.match(x) and HOP_METRIC.match(x)["name"] == "success"):
+            s = r.summary[f"eval/success@{k}"]
+            n = hop_n(r, k)
+            lo, hi = wilson_interval(s * n, n) if n else (float("nan"), float("nan"))
+            rows.append({"agent": policy_label(r), "machine": r.machine, "run": r.name, "hop": k, "success": s,
+                         "ci_low": lo, "ci_high": hi, "err_plus": hi - s if n else None,
+                         "err_minus": s - lo if n else None, "extra_steps": r.summary.get(f"eval/extra_steps@{k}"), "n": n})
+    return pd.DataFrame(rows, columns=["agent", "machine", "run", "hop", "success", "ci_low", "ci_high",
+                                       "err_plus", "err_minus", "extra_steps", "n"])
+
+
+def comparability_warnings(runs: list[RunInfo]) -> list[str]:
+    """Things that make a side-by-side comparison misleading."""
+    out = []
+    for key, label in (("graph", "graphs"), ("max_steps", "step limits")):
+        vals = {r.config.get(key) for r in runs}
+        if len(vals) > 1:
+            out.append(f"Selected runs use different {label}: {sorted(map(str, vals))}. Success rates are not directly comparable.")
+    n_per = {r.config.get("n_per_hop") for r in runs if r.config.get("n_per_hop")}
+    if len(n_per) > 1:
+        out.append(f"Different numbers of episodes per hop {sorted(n_per)}: error bars differ accordingly.")
+    return out
