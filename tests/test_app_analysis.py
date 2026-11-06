@@ -73,3 +73,62 @@ def test_subgraph_is_deterministic_and_edges_reference_nodes(src, graph):
 def test_path_figure_builds(src, graph):
     fig = path_figure(path_subgraph(graph, _ep(src, "run0")[0]))
     assert len(fig.data) >= 3
+
+
+# ---- Batch B ----------------------------------------------------------------------------------------
+from wikigame.rollout import run_episode  # noqa: E402
+from wikigame import WikiGameEnv  # noqa: E402
+from wikigame.webapp.analysis import (diagnostic_flags, drift_df, end_reason_table, first_wrong_turn,  # noqa: E402
+                                      reward_breakdown, steps_df, wrong_turn_by_step, worst_failures)
+
+
+def test_drift_oracle_none_random_some(src, graph):
+    assert not drift_df(graph, _ep(src, "run1")).wrong_turn.any()
+    d = drift_df(graph, _ep(src, "run0"))
+    assert d.wrong_turn.any() and len(d) == sum(len(e["path"]) - 1 for e in _ep(src, "run0"))
+    w = wrong_turn_by_step(d)
+    assert (w.share.between(0, 1)).all() and w.moves.iloc[0] == d[d.step == 1].shape[0]
+    fw = first_wrong_turn(d)
+    assert (fw >= 1).all()
+
+
+def test_end_reasons_and_worst_failures(src, graph):
+    df = episodes_df(_ep(src, "run0"))
+    t = end_reason_table(df)
+    assert t.values.sum() == len(df) and set(t.index) == {1, 2, 3}
+    bad = worst_failures(df, drift_df(graph, _ep(src, "run0")), k=5)
+    assert len(bad) <= 5 and not bad.success.any()
+    assert bad.wrong_turn_share.is_monotonic_decreasing
+
+
+def test_reward_breakdown_reproduces_env_totals(src):
+    """The decomposition (success/step/invalid/dead-end) must add up exactly to what the env logged."""
+    for rid in ("run0", "run1"):
+        rb = reward_breakdown(_ep(src, rid), {"step_cost": 0.02})
+        assert rb.residual.abs().max() < 1e-9
+
+
+def test_reward_breakdown_with_invalid_actions_and_dead_end(graph):
+    eps = [run_episode(WikiGameEnv(graph, max_invalid=3, seed=0), lambda o, e: "garbage", options={"source": 0, "target": 7}).to_dict(),
+           run_episode(WikiGameEnv(graph, seed=0), lambda o, e: '<answer>{"title": "B"}</answer>' if e.cur == 0 else '<answer>{"title": "D"}</answer>',
+                       options={"source": 0, "target": 4}).to_dict()]
+    assert eps[0]["end_reason"] == "invalid_action"
+    assert reward_breakdown(eps).residual.abs().max() < 1e-9
+
+
+def test_steps_df_format_compliance(graph):
+    good = '<think>ok</think><answer>{"title": "B"}</answer>'
+    ep = run_episode(WikiGameEnv(graph, max_invalid=2, seed=0), lambda o, e: good if e.steps == 0 and not e.invalid else "nope",
+                     options={"source": 0, "target": 7}).to_dict()
+    s = steps_df([ep])
+    assert s.format_ok.tolist()[0] is True and not s.format_ok.iloc[1:].any()
+    assert s.think_chars.iloc[0] == 2
+
+
+def test_flags_oracle_clean_and_garbage_flagged(src, graph):
+    clean = diagnostic_flags(episodes_df(_ep(src, "run1")), steps_df(_ep(src, "run1")))
+    assert all(f["status"] != "warn" for f in clean)
+    garbage = [run_episode(WikiGameEnv(graph, max_invalid=3, seed=0), lambda o, e: "x", options={"source": 0, "target": 7}, n_hops=2).to_dict()
+               for _ in range(5)]
+    warned = {f["name"] for f in diagnostic_flags(episodes_df(garbage), steps_df(garbage)) if f["status"] == "warn"}
+    assert {"Invalid actions", "Format compliance", "Quitting via invalid actions"} <= warned

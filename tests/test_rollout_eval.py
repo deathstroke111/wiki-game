@@ -51,3 +51,35 @@ def test_episode_serializable(graph):
     ep = run_episode(env, oracle_policy(), options={"source": 0, "target": 6}, n_hops=3)
     d = ep.to_dict()
     assert d["path"][0] == "A" and d["path"][-1] == "G" and d["n_hops"] == 3
+
+
+def test_recorder_matches_run_episode(graph):
+    """A human-style manual loop through EpisodeRecorder must equal run_episode for the same moves."""
+    from wikigame.env import parse_action
+    from wikigame.rollout import EpisodeRecorder
+
+    opts = {"source": 0, "target": 6}
+    ref = run_episode(WikiGameEnv(graph, max_steps=10, max_links_shown=500, seed=3), oracle_policy(), options=opts, n_hops=3)
+
+    env = WikiGameEnv(graph, max_steps=10, max_links_shown=500, seed=3)
+    obs, info = env.reset(options=opts)
+    rec, pol = EpisodeRecorder(env, info, 3), oracle_policy()
+    done = False
+    while not done:
+        text = pol(obs, env)
+        obs, r, term, trunc, info = env.step(parse_action(text))
+        rec.record(text, parse_action(text), r, info)
+        done = term or trunc
+    assert rec.finish().to_dict() == ref.to_dict()
+
+
+def test_recorder_gave_up_overrides_reason(graph):
+    from wikigame.rollout import EpisodeRecorder
+
+    env = WikiGameEnv(graph, seed=0)
+    _, info = env.reset(options={"source": 0, "target": 7})
+    rec = EpisodeRecorder(env, info)
+    _, r, _, _, step_info = env.step("B")
+    rec.record("x", "B", r, step_info)
+    ep = rec.finish("gave_up")
+    assert ep.end_reason == "gave_up" and not ep.success and ep.path == ["A", "B"]

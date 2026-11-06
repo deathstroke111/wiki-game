@@ -9,24 +9,8 @@ from wikigame.webapp.viz import path_figure
 st.title("🔍 Episodes")
 H.refresh_button()
 
-all_runs = H.runs()
-if not all_runs:
-    st.info("No runs found in the W&B project yet.")
-    st.stop()
-
-# ---- choose run + eval batch ---------------------------------------------------------------------
-labels = {f"{r.name}  ·  {r.id}": r for r in all_runs}
-run = labels[st.sidebar.selectbox("Run", list(labels))]
-sets = H.episode_sets(run.id)
-if not sets:
-    st.warning("This run has no `episodes` artifact (it never logged episodes).")
-    st.stop()
-set_labels = {f"{s.split} · step {s.step} · {s.n_episodes} episodes": s for s in sets}
-eset = set_labels[st.sidebar.selectbox("Eval batch", list(set_labels), index=len(set_labels) - 1)]
-
-episodes = H.episodes(run.id, eset.key)
+run, eset, episodes, graph = H.pick_episode_set()
 df = episodes_df(episodes)
-graph = H.graph(run.graph)
 
 # ---- filters --------------------------------------------------------------------------------------
 with st.sidebar:
@@ -59,8 +43,13 @@ event = st.dataframe(table, hide_index=True, width="stretch", on_select="rerun",
                      selection_mode="single-row", key="ep_table",
                      column_config={"total_reward": st.column_config.NumberColumn(format="%.2f")})
 rows = event.selection.rows
-idx = int(table.iloc[rows[0]].idx) if rows else int(table.iloc[0].idx)
-if not rows:
+linked = st.query_params.get("idx")  # deep link from the Failures page
+if rows:
+    idx = int(table.iloc[rows[0]].idx)
+elif linked is not None and linked.isdigit() and int(linked) < len(episodes):
+    idx = int(linked)
+else:
+    idx = int(table.iloc[0].idx)
     st.caption("Showing the first row; click a row in the table to inspect another episode.")
 ep = episodes[idx]
 

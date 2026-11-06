@@ -35,37 +35,59 @@ class Episode:
         return asdict(self)
 
 
+class EpisodeRecorder:
+    """Builds an Episode from an env's reset info and each (text, title, step result).
+
+    Shared by run_episode (agents) and the Play page (humans) so both yield identical records.
+    Call ``record`` after every ``env.step`` and ``finish`` once the episode is over.
+    """
+
+    def __init__(self, env: WikiGameEnv, reset_info: dict, n_hops: int | None = None):
+        self.env, g = env, env.graph
+        self.ep = Episode(
+            source=g.titles[reset_info["source"]],
+            target=g.titles[reset_info["target"]],
+            optimal_steps=reset_info["optimal_steps"],
+            n_hops=n_hops,
+            path=[g.titles[reset_info["source"]]],
+        )
+        self._n_links = len(env.links)  # links shown with the observation the next action answers
+        self._info: dict = {}
+
+    def record(self, text: str, title: str | None, reward: float, info: dict) -> None:
+        ep = self.ep
+        ep.total_reward += reward
+        ep.steps.append({"chosen": title, "valid": info["valid"], "reward": reward,
+                         "n_links": self._n_links, "text": text})
+        if info["valid"]:
+            ep.n_valid += 1
+            ep.path.append(self.env.graph.titles[self.env.cur])
+        else:
+            ep.n_invalid += 1
+        self._n_links = len(self.env.links)
+        self._info = info
+
+    def finish(self, reason: str | None = None) -> Episode:
+        """Finalize. ``reason`` overrides the end reason (e.g. 'gave_up' for a human who quits)."""
+        ep, info = self.ep, self._info
+        ep.success = bool(info.get("success", False))
+        ep.extra_steps = info.get("extra_steps")
+        ep.end_reason = reason or ("success" if ep.success else info.get("reason", "step_limit"))
+        return ep
+
+
 def run_episode(
     env: WikiGameEnv, policy: Policy, options: dict | None = None, n_hops: int | None = None
 ) -> Episode:
     obs, info = env.reset(options=options)
-    g = env.graph
-    ep = Episode(
-        source=g.titles[info["source"]],
-        target=g.titles[info["target"]],
-        optimal_steps=info["optimal_steps"],
-        n_hops=n_hops,
-        path=[g.titles[info["source"]]],
-    )
+    rec = EpisodeRecorder(env, info, n_hops)
     terminated = truncated = False
     while not (terminated or truncated):
-        n_links = len(env.links)
         text = policy(obs, env)
         title = parse_action(text)
         obs, reward, terminated, truncated, info = env.step(title)
-        ep.total_reward += reward
-        ep.steps.append(
-            {"chosen": title, "valid": info["valid"], "reward": reward, "n_links": n_links, "text": text}
-        )
-        if info["valid"]:
-            ep.n_valid += 1
-            ep.path.append(g.titles[env.cur])
-        else:
-            ep.n_invalid += 1
-    ep.success = bool(info.get("success", False))
-    ep.extra_steps = info.get("extra_steps")
-    ep.end_reason = "success" if ep.success else info.get("reason", "step_limit")
-    return ep
+        rec.record(text, title, reward, info)
+    return rec.finish()
 
 
 # -- scripted policies (baselines / test oracles) ----------------------------------------------------

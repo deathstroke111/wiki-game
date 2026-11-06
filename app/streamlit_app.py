@@ -10,5 +10,8 @@ st.set_page_config(page_title="Wiki-game RL", page_icon="🧭", layout="wide")
 pages = [
     st.Page("views/runs.py", title="Runs", icon="📊", default=True),
     st.Page("views/episodes.py", title="Episodes", icon="🔍"),
+    st.Page("views/failures.py", title="Failures", icon="🧯"),
+    st.Page("views/diagnostics.py", title="Diagnostics", icon="🩺"),
+    st.Page("views/play.py", title="Play", icon="🎮"),
 ]
 st.navigation(pages).run()
