@@ -47,6 +47,25 @@ class WikiGraph:
     def shortest_dist(self, src: int, dst: int) -> int | None:
         return self.bfs_dist(src).get(dst)
 
+    def shortest_path(self, src: int, dst: int) -> list[int] | None:
+        """One shortest path src -> dst as node ids (BFS with parent pointers), or None if unreachable."""
+        parent = {src: -1}
+        q = deque([src])
+        while q:
+            u = q.popleft()
+            if u == dst:
+                break
+            for v in self.adj[u]:
+                if v not in parent:
+                    parent[v] = u
+                    q.append(v)
+        if dst not in parent:
+            return None
+        path = [dst]
+        while path[-1] != src:
+            path.append(parent[path[-1]])
+        return path[::-1]
+
     def dist_to(self, dst: int) -> dict[int, int]:
         """Hop distance from every node TO dst (BFS on the reversed graph). Used by the oracle policy."""
         if not hasattr(self, "_radj"):

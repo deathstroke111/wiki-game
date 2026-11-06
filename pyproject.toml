@@ -11,7 +11,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+app = [
+    "networkx>=3.7",
+    "pandas>=3.1.1",
+    "plotly>=7.1.0",
+    "streamlit>=1.67.0",
+]
 dev = [
+    "kaleido>=1.5.0",
     "pytest>=9.2.0",
 ]
 
