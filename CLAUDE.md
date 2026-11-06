@@ -1,0 +1,2 @@
+Always execute and install anything you need in this python environment and not globally. 
+There are two environments one environment is the local dev environment(macbook m4 24 GB RAM) and other is other machine(which is rented not always available) an CUDA (NVidia RTX with 16 GB VRAM and 64 GB RAM). Always check which machine is on, using a hook - create a hook if not present. 
