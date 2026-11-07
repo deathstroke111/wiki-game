@@ -31,7 +31,7 @@ def detect_machine() -> str:
         if forced not in ("local", "cuda"):
             raise ValueError(f"WIKIGAME_MACHINE must be 'local' or 'cuda', got {forced!r}")
         return forced
-    if platform.system() == "Linux" and shutil.which("nvidia-smi"):
+    if platform.system() in ("Linux", "Windows") and shutil.which("nvidia-smi"):
         try:
             if subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=10).returncode == 0:
                 return "cuda"

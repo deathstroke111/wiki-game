@@ -14,11 +14,16 @@ if [ "$os" = "Darwin" ]; then
   mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
   machine="LOCAL_DEV"
   msg="Machine: LOCAL_DEV (macOS ${arch}, ${chip}, ${mem_gb} GB unified RAM, host ${host}). No CUDA: use device 'mps' or 'cpu'. Use for development, unit tests, tiny smoke runs only; no real training. Use the project .venv via uv."
-elif [ "$os" = "Linux" ] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+elif { [ "$os" = "Linux" ] || case "$os" in MINGW*|MSYS*|CYGWIN*) true;; *) false;; esac; } \
+     && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
   gpu="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n1)"
-  mem_gb="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null)"
+  if [ -r /proc/meminfo ]; then
+    mem_gb="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null)"
+  else  # Windows (Git Bash): no /proc/meminfo
+    mem_gb="$(powershell.exe -NoProfile -Command '[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)' 2>/dev/null | tr -d '\r')"
+  fi
   machine="CUDA_RENTED"
-  msg="Machine: CUDA_RENTED (Linux ${arch}, GPU: ${gpu}, ${mem_gb} GB system RAM, host ${host}). Rented and not always available: real training and large evals run here, device 'cuda'. Use the project .venv via uv, and checkpoint/log often since the box may disappear."
+  msg="Machine: CUDA_RENTED (${os} ${arch}, GPU: ${gpu}, ${mem_gb} GB system RAM, host ${host}). Rented and not always available: real training and large evals run here, device 'cuda'. Use the project .venv via uv, and checkpoint/log often since the box may disappear."
 else
   machine="UNKNOWN"
   msg="Machine: UNKNOWN (${os} ${arch}, host ${host}). Matches neither the local M4 MacBook nor the rented CUDA box (no working nvidia-smi on Linux). Ask the user before running anything heavy."
