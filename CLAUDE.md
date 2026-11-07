@@ -109,8 +109,13 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
 - `grpo_train.py` now has `--save-total-limit` (default 0 = keep ALL checkpoints, so each can be evaluated later).
   Checkpoints are LoRA adapters in `data/ckpt/<out>/checkpoint-<step>`; `zero_shot.py --adapter <dir>` loads them.
   Trainer-level resume is not exposed; `--resume-adapter` restores weights only (no optimizer state).
-- **Stage 1 main run launched 2026-11-08 ~02:55 IST:** `--stage 1 --max-completion 1024 --max-steps 300 --save-steps 25
-  --out data/ckpt/grpo-step-r1-stage1`, W&B run `grpo-step-r1-1.5b-stage1-cuda-2419725` (group grpo-per-step).
+- **Always run training with `PYTHONUTF8=1 PYTHONIOENCODING=utf-8`.** The first stage-1 launch crashed at step 1 with
+  `UnicodeEncodeError` (cp1252 console) because TRL's `log_completions` prints sampled text (it contained 'ố'); the W&B-off
+  dry run could not hit it. That aborted W&B run `k8mnksk6` (`...-cuda-2419725`, no useful data) is left in the project; don't delete without asking.
+- **Stage 1 main run relaunched 2026-11-08 ~03:10 IST**, detached via PowerShell `Start-Process` (so no tool timeout can kill it;
+  stdout/stderr -> `data/logs/stage1.log` / `stage1.err`): `--stage 1 --max-completion 1024 --max-steps 300 --save-steps 25
+  --out data/ckpt/grpo-step-r1-stage1`. W&B run `ceebhgej` = `grpo-step-r1-1.5b-stage1-cuda-5762c82` (group grpo-per-step).
+  Steps 1-2 at ~80-108 s/step => ~7-9 h total. Checkpoints land every 25 steps in `data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
 
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
