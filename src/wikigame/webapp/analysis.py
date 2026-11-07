@@ -9,6 +9,7 @@ import re
 
 import pandas as pd
 
+from ..env import classify_invalid
 from ..graph import WikiGraph
 from .data import RunInfo
 
@@ -152,19 +153,78 @@ def step_progress_with(graph: WikiGraph, ep: dict, d: dict[int, int]) -> list[di
     return rows
 
 
-def steps_df(episodes: list[dict]) -> pd.DataFrame:
-    """One row per action (valid or not) with format compliance of the raw model text."""
+CAUSE_INFO = {
+    "target_not_linked": ("Names the target (not linked)", "The model typed the target article, but it isn't linked "
+                          "from the current page. It knows where it wants to go and ignores the link list."),
+    "not_linked": ("Real page, not linked", "A real article title that is not in the current link list."),
+    "unknown_title": ("Not an article title", "A title that doesn't exist in the graph: hallucinated or misspelled."),
+    "current_page": ("Re-picks current page", "The model chose the page it is already on."),
+    "revisit": ("Revisits a page", "The model went back to an earlier page on its path (not allowed)."),
+    "unparseable": ("Unparseable output", "No valid <answer>{json}</answer>: a format failure (e.g. ```json fences)."),
+    "unrecorded": ("Cause not recorded", "Old episode without a stored cause and no local graph to infer it from."),
+}
+
+
+def step_causes(graph: WikiGraph | None, ep: dict) -> list[str | None]:
+    """Invalid-action cause per step (None for valid steps). Uses the stored cause when present; episodes
+    recorded before causes existed are backfilled from the path (needs the graph), else 'unrecorded'."""
+    out: list[str | None] = []
+    visited: list[str] = [ep["path"][0]]
+    cur = ep["path"][0]
+    target = graph.id_of(ep["target"]) if graph else None
+    for s in ep["steps"]:
+        if s["valid"]:
+            out.append(None)
+            cur = s["chosen"]
+            visited.append(cur)
+            continue
+        if "cause" in s and s["cause"]:
+            out.append(s["cause"])
+        elif graph is not None and target is not None and graph.id_of(cur) is not None:
+            vis = {graph.id_of(t) for t in visited}
+            out.append(classify_invalid(graph, graph.id_of(cur), vis, target, s["chosen"]) or "unrecorded")
+        else:
+            out.append("unrecorded")
+    return out
+
+
+def steps_df(episodes: list[dict], graph: WikiGraph | None = None) -> pd.DataFrame:
+    """One row per action (valid or not) with format compliance of the raw model text and, for invalid
+    actions, the cause (see step_causes)."""
     rows = []
     for i, ep in enumerate(episodes):
+        causes = step_causes(graph, ep)
         for j, s in enumerate(ep["steps"], 1):
             text = s.get("text") or ""
             think = THINK_RE.search(text)
             rows.append({"ep_idx": i, "n_hops": ep.get("n_hops"), "step": j, "valid": s["valid"],
                          "chosen": s["chosen"], "reward": s["reward"], "n_links": s["n_links"],
                          "format_ok": bool(FORMAT_RE.search(text)) and parse_action(text) is not None,
-                         "think_chars": len(think.group(1).strip()) if think else 0})
+                         "think_chars": len(think.group(1).strip()) if think else 0, "cause": causes[j - 1]})
     return pd.DataFrame(rows, columns=["ep_idx", "n_hops", "step", "valid", "chosen", "reward", "n_links",
-                                       "format_ok", "think_chars"])
+                                       "format_ok", "think_chars", "cause"])
+
+
+def invalid_cause_table(steps: pd.DataFrame) -> pd.DataFrame:
+    """Invalid actions per cause: count, share of invalid actions, share of ALL actions. Largest first."""
+    bad = steps[~steps.valid]
+    if bad.empty:
+        return pd.DataFrame(columns=["cause", "label", "count", "share_of_invalid", "share_of_actions"])
+    t = bad.groupby("cause").size().rename("count").reset_index()
+    t["label"] = t.cause.map(lambda c: CAUSE_INFO.get(c, (c, ""))[0])
+    t["share_of_invalid"] = t["count"] / len(bad)
+    t["share_of_actions"] = t["count"] / len(steps)
+    return t.sort_values("count", ascending=False).reset_index(drop=True)[
+        ["cause", "label", "count", "share_of_invalid", "share_of_actions"]]
+
+
+def top_bad_titles(steps: pd.DataFrame, k: int = 10) -> pd.DataFrame:
+    """Most frequent invalid answers with their cause (unparseable output has no title and is skipped)."""
+    bad = steps[(~steps.valid) & steps.chosen.notna()]
+    if bad.empty:
+        return pd.DataFrame(columns=["chosen", "cause", "count"])
+    return (bad.groupby(["chosen", "cause"]).size().rename("count").reset_index()
+            .sort_values("count", ascending=False).head(k).reset_index(drop=True))
 
 
 def reward_breakdown(episodes: list[dict], reward_cfg: dict | None = None) -> pd.DataFrame:

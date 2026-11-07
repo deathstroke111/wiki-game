@@ -3,12 +3,13 @@ import plotly.express as px
 import streamlit as st
 
 from wikigame.webapp import st_helpers as H
-from wikigame.webapp.analysis import diagnostic_flags, episodes_df, reward_breakdown, steps_df
+from wikigame.webapp.analysis import (CAUSE_INFO, diagnostic_flags, episodes_df, invalid_cause_table, reward_breakdown,
+                                      steps_df, top_bad_titles)
 
 st.title("🩺 Behaviour diagnostics")
 H.refresh_button()
 run, eset, episodes, graph = H.pick_episode_set()
-df, steps = episodes_df(episodes), steps_df(episodes)
+df, steps = episodes_df(episodes), steps_df(episodes, graph)
 st.caption(f"`{run.name}` · machine **{run.machine}** · {eset.split} step {eset.step} · {len(df)} episodes · {len(steps)} actions")
 
 # ---- flags ----------------------------------------------------------------------------------------
@@ -24,6 +25,30 @@ for i, f in enumerate(flags):
         with st.expander("What this means"):
             st.write(f["detail"])
 st.caption("🟢 fine · 🟠 likely a problem · 🔵 worth a look. Thresholds are heuristics (see `THRESH` in `webapp/analysis.py`).")
+
+# ---- invalid causes -------------------------------------------------------------------------------
+st.subheader("Why actions were invalid")
+causes = invalid_cause_table(steps)
+if causes.empty:
+    st.success("No invalid actions in this batch.")
+else:
+    left, right = st.columns([3, 2])
+    with left:
+        by_hop = (steps[~steps.valid].assign(label=lambda x: x.cause.map(lambda c: CAUSE_INFO.get(c, (c,))[0]))
+                  .groupby(["n_hops", "label"]).size().rename("count").reset_index())
+        fig = px.bar(by_hop, x="n_hops", y="count", color="label", labels={"n_hops": "hops to target", "label": "cause"})
+        fig.update_xaxes(type="category")
+        st.plotly_chart(fig, width="stretch")
+    with right:
+        st.dataframe(causes[["label", "count", "share_of_invalid", "share_of_actions"]], hide_index=True, width="stretch",
+                     column_config={"share_of_invalid": st.column_config.NumberColumn("of invalid", format="percent"),
+                                    "share_of_actions": st.column_config.NumberColumn("of all actions", format="percent")})
+    with st.expander("What each cause means / most frequent bad answers"):
+        for c in causes.cause:
+            st.markdown(f"**{CAUSE_INFO.get(c, (c, ''))[0]}**: {CAUSE_INFO.get(c, ('', ''))[1]}")
+        st.dataframe(top_bad_titles(steps), hide_index=True, width="stretch")
+    if (causes.cause == "unrecorded").any():
+        st.caption("Some actions have no stored cause and the run's graph file isn't available locally to infer it.")
 
 # ---- path efficiency ------------------------------------------------------------------------------
 st.subheader("Path length vs optimal")

@@ -3,7 +3,7 @@ import pandas as pd
 import streamlit as st
 
 from wikigame.webapp import st_helpers as H
-from wikigame.webapp.analysis import episodes_df, optimal_path, path_subgraph, step_progress
+from wikigame.webapp.analysis import CAUSE_INFO, episodes_df, optimal_path, path_subgraph, step_causes, step_progress
 from wikigame.webapp.viz import path_figure
 
 st.title("🔍 Episodes")
@@ -74,8 +74,10 @@ if graph:
 st.markdown("**Step by step**")
 prog = iter(step_progress(graph, ep)) if graph else None
 cur, rows_out = ep["source"], []
+causes = step_causes(graph, ep)
 for i, s in enumerate(ep["steps"], 1):
-    row = {"#": i, "from": cur, "chose": s["chosen"], "valid": s["valid"], "links shown": s["n_links"], "reward": round(s["reward"], 3)}
+    row = {"#": i, "from": cur, "chose": s["chosen"], "valid": s["valid"], "links shown": s["n_links"], "reward": round(s["reward"], 3),
+           "why invalid": CAUSE_INFO.get(causes[i - 1], (causes[i - 1],))[0] if causes[i - 1] else ""}
     if s["valid"]:
         if prog:
             p = next(prog)

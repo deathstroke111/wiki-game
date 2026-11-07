@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+from collections import Counter
 from statistics import mean
 
 from .env import WikiGameEnv
@@ -30,6 +31,8 @@ def summarize(episodes: list[Episode]) -> dict[str, float]:
     actions = sum(e.n_valid + e.n_invalid for e in episodes)
     m["success"] = mean(e.success for e in episodes)
     m["invalid_rate"] = sum(e.n_invalid for e in episodes) / max(1, actions)
+    for cause, n in Counter(st["cause"] for e in episodes for st in e.steps if st.get("cause")).items():
+        m[f"invalid_cause/{cause}"] = n / max(1, actions)  # share of ALL actions; sums to invalid_rate
     m["path_len"] = mean(len(e.path) - 1 for e in episodes)
     m["reward"] = mean(e.total_reward for e in episodes)
     m["n_episodes"] = len(episodes)

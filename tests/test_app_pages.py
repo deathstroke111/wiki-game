@@ -107,3 +107,58 @@ def test_baselines_page_renders_and_filters():
     assert any("No human baseline" in c.value for c in at.caption)  # nudges toward the Play page
     at.multiselect[0].set_value([at.multiselect[0].options[0]]).run()  # single agent
     assert not at.exception, at.exception
+
+
+# ---- invalid-cause views ------------------------------------------------------------------------------
+@pytest.fixture
+def source_with_invalids(monkeypatch):
+    """Fixture source plus a run whose agent only emits invalid actions (the stock runs never do)."""
+    import streamlit as st
+
+    from wikigame import WikiGameEnv
+    from wikigame.webapp import data
+    from wikigame.rollout import run_episode
+
+    real = data.make_fixture_source
+
+    def with_garbage():
+        src = real()
+        eps = []
+        for k in (1, 2):
+            for s, t in [(0, 3), (0, 7)]:
+                ep = run_episode(WikiGameEnv(src.graph, max_invalid=3, seed=0), lambda o, e: "no tags",
+                                 options={"source": s, "target": t}, n_hops=k)
+                eps.append(ep.to_dict())
+        key = "episodes-run9-eval-step0:v0"
+        src.runs.append(data.RunInfo("run9", "zeroshot-garbage", "local", "g", "baseline", "finished",
+                                     ["machine:local"], "2026-11-09", {"graph": "fixture"}, {}))
+        src.sets["run9"] = [data.EpisodeSet(key, 0, "eval", len(eps), "d9")]
+        src.episodes[("run9", key)] = eps
+        return src
+
+    st.cache_resource.clear(); st.cache_data.clear()
+    monkeypatch.setattr(data, "make_fixture_source", with_garbage)
+    yield
+    st.cache_resource.clear(); st.cache_data.clear()
+
+
+def _select_run(at, name):
+    box = at.sidebar.selectbox[0]
+    box.select([o for o in box.options if name in o][0]).run()
+
+
+def test_diagnostics_shows_invalid_causes(source_with_invalids):
+    at = run("diagnostics.py")
+    _select_run(at, "zeroshot-garbage")
+    assert not at.exception, at.exception
+    assert any("Why actions were invalid" in s.value for s in at.subheader)
+    tables = [d.value for d in at.dataframe if "label" in d.value.columns]
+    assert tables and list(tables[0]["label"]) == ["Unparseable output"]  # every garbage action is unparseable
+
+
+def test_episodes_page_shows_why_invalid_column(source_with_invalids):
+    at = run("episodes.py")
+    _select_run(at, "zeroshot-garbage")
+    assert not at.exception, at.exception
+    steps_tables = [d.value for d in at.dataframe if "why invalid" in d.value.columns]
+    assert steps_tables and (steps_tables[0]["why invalid"] == "Unparseable output").all()

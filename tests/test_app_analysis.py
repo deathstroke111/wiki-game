@@ -174,3 +174,40 @@ def test_comparability_warnings():
     a = RunInfo("a", "a", "local", "", "baseline", "", [], "", {"graph": "x", "max_steps": 10}, {})
     b = RunInfo("b", "b", "cuda", "", "baseline", "", [], "", {"graph": "y", "max_steps": 20}, {})
     assert len(comparability_warnings([a, b])) == 2 and comparability_warnings([a, a]) == []
+
+
+# ---- invalid causes ---------------------------------------------------------------------------------------
+from wikigame.eval import summarize  # noqa: E402
+from wikigame.rollout import oracle_policy  # noqa: E402
+from wikigame.webapp.analysis import invalid_cause_table, step_causes, top_bad_titles  # noqa: E402
+
+
+def _bad_episode(graph):
+    """Source A, target H (not linked from A). Answers: target, current page, junk, then a valid move."""
+    answers = iter(['<answer>{"title": "H"}</answer>', '<answer>{"title": "A"}</answer>', "junk"])
+    pol = lambda o, e: next(answers, None) or oracle_policy()(o, e)  # noqa: E731  (then play on, validly)
+    return run_episode(WikiGameEnv(graph, max_invalid=5, seed=0), pol, options={"source": 0, "target": 7}, n_hops=2).to_dict()
+
+
+def test_step_causes_recorded_and_backfilled_agree(graph):
+    ep = _bad_episode(graph)
+    recorded = step_causes(None, ep)  # no graph needed when causes were stored
+    assert recorded[:3] == ["target_not_linked", "current_page", "unparseable"]
+    old = {**ep, "steps": [{k: v for k, v in s.items() if k != "cause"} for s in ep["steps"]]}  # pre-cause format
+    assert step_causes(graph, old) == recorded  # backfill reproduces the env's classification
+    assert set(step_causes(None, old)) - {None} == {"unrecorded"}  # no graph, no cause: honest about it
+
+
+def test_invalid_cause_table_and_top_titles(graph):
+    steps = steps_df([_bad_episode(graph)], graph)
+    t = invalid_cause_table(steps)
+    assert t["count"].sum() == (~steps.valid).sum() and abs(t.share_of_invalid.sum() - 1) < 1e-9
+    top = top_bad_titles(steps)
+    assert set(top.chosen) == {"H", "A"}  # unparseable has no title and is skipped
+    assert invalid_cause_table(steps[steps.valid]).empty
+
+
+def test_summarize_cause_rates_sum_to_invalid_rate(graph):
+    eps = [run_episode(WikiGameEnv(graph, max_invalid=3, seed=0), lambda o, e: "x", options={"source": 0, "target": 7}, n_hops=2)]
+    m = summarize(eps)
+    assert abs(sum(v for k, v in m.items() if k.startswith("invalid_cause/")) - m["invalid_rate"]) < 1e-9
