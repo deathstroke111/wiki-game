@@ -30,6 +30,8 @@ def main() -> None:
     ap.add_argument("--pair-pool", type=int, default=50, help="size of the shared eval pair set to take the first n from")
     ap.add_argument("--max-steps", type=int, default=10)
     ap.add_argument("--max-new-tokens", type=int, default=256)
+    ap.add_argument("--temperature", type=float, default=0.0, help="0 = greedy (default); R1 distills want ~0.6")
+    ap.add_argument("--seed", type=int, default=0, help="sampling seed (only used when temperature > 0)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--lenient", action="store_true",
                     help="also accept a bare/```json title (separates format failures from navigation failures)")
@@ -42,12 +44,14 @@ def main() -> None:
     pool = make_pairs(graph, hops=tuple(a.hops), n_per_hop=a.pair_pool)
     pairs = {k: v[: a.n_per_hop] for k, v in pool.items()}
     t0 = time.time()
-    policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient)
+    policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient,
+                      temperature=a.temperature, seed=a.seed)
     print(f"loaded {a.model} on {policy.device} in {time.time() - t0:.0f}s", flush=True)
 
     short = a.model.split("/")[-1].lower()
     name = f"zeroshot-{short}" + ("-lenient" if a.lenient else "") + ("-feedback" if a.feedback else "")
-    cfg = {"policy": name, "model": a.model, "decoding": "greedy", "max_new_tokens": a.max_new_tokens, "hops": a.hops,
+    cfg = {"policy": name, "model": a.model, "decoding": "greedy" if a.temperature == 0 else f"sample(T={a.temperature})",
+           "temperature": a.temperature, "sample_seed": a.seed, "system_in_user": policy.system_in_user, "prompt_hint": policy.hint, "max_new_tokens": a.max_new_tokens, "hops": a.hops,
            "n_per_hop": a.n_per_hop, "max_steps": a.max_steps, "seed": 0, "device": policy.device,
            "lenient_parse": a.lenient, "feedback": a.feedback}
     env = WikiGameEnv(graph, max_steps=a.max_steps, seed=0, feedback=a.feedback)

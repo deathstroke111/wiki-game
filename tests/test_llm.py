@@ -39,3 +39,14 @@ def test_lenient_answer_rescues_bare_and_fenced_json_only():
     assert parse_action(lenient_answer('{"title": "B", "reason": "r"}')) == "B"
     assert lenient_answer("I think China.") == "I think China."  # no title -> unchanged (still invalid)
     assert parse_action(lenient_answer("I think China.")) is None
+
+
+def test_r1_detection_and_system_merge():
+    from wikigame.llm import is_r1, merge_system
+
+    assert is_r1("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B") and not is_r1("Qwen/Qwen2.5-1.5B-Instruct")
+    merged = merge_system(build_messages("OBS"))
+    assert [m["role"] for m in merged] == ["user"] and merged[0]["content"] == f"{SYSTEM_PROMPT}\n\nOBS"
+    hinted = merge_system(build_messages("OBS"), "BE BRIEF")
+    assert hinted[0]["content"] == f"{SYSTEM_PROMPT} BE BRIEF\n\nOBS"
+    assert merge_system([{"role": "user", "content": "x"}]) == [{"role": "user", "content": "x"}]  # no system: unchanged
