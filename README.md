@@ -24,3 +24,20 @@ Diagnostics (health flags, reward breakdown) · Baselines (random/oracle/human/m
 ## Layout
 - `src/wikigame/` graph, env, rollout, eval, tracking; `webapp/` data layer, analysis, plots for the app
 - `app/` Streamlit pages · `scripts/` runnable entry points · `tests/`
+
+## GRPO training (per-step reward)
+
+One training example is one game state; the model samples G answers and each is scored by taking that move in the
+env (`grpo_reward.StepReward`: +1 closer / 0 sideways / -1 farther, step cost, success bonus, invalid = -2).
+States come from `states.sample_states` (fresh starts, shortest-path prefixes, noisy walks; never the eval pairs).
+
+```bash
+# plumbing check on the Mac (tiny model; numbers are meaningless)
+HF_HOME=data/hf uv run python scripts/grpo_train.py --model Qwen/Qwen2.5-0.5B-Instruct --max-steps 3 \
+    --num-generations 4 --prompts-per-step 1 --micro-batch 4 --max-completion 128 --no-wandb
+# real run on the RTX: stage 1 (1024-token cap), then stage 2 resumes the adapter with a 512 cap
+uv run python scripts/grpo_train.py --stage 1 --max-completion 1024
+uv run python scripts/grpo_train.py --stage 2 --max-completion 512 --resume-adapter data/ckpt/grpo-step-r1-stage1
+# evaluate a checkpoint on the same held-out pairs as every baseline
+uv run python scripts/zero_shot.py --adapter data/ckpt/grpo-step-r1-stage1 --name grpo-step-r1-stage1 --lenient --temperature 0.6 --n-per-hop 50 --max-new-tokens 1024
+```

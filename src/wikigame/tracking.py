@@ -59,6 +59,7 @@ def init_run(
     graph_name: str | None = None,
     tags: list[str] | None = None,
     machine: str | None = None,
+    group: str | None = None,
 ):
     """Start a W&B run. job_type: train | eval | baseline | smoke. Returns the wandb run."""
     machine = machine or detect_machine()
@@ -73,7 +74,7 @@ def init_run(
     return wandb.init(
         entity=os.environ.get("WANDB_ENTITY", ENTITY),
         project=os.environ.get("WANDB_PROJECT", PROJECT),
-        group=experiment,
+        group=group or experiment,
         job_type=job_type,
         name=f"{experiment}-{machine}-{sha}",
         tags=all_tags,

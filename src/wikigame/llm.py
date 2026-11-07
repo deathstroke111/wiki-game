@@ -86,7 +86,8 @@ class HFPolicy:
 
     def __init__(self, model_id: str = DEFAULT_MODEL, device: str | None = None, max_new_tokens: int = 256,
                  temperature: float = 0.0, dtype: str = "bfloat16", lenient: bool = False,
-                 system_in_user: bool | None = None, seed: int = 0, hint: str | None = None):
+                 system_in_user: bool | None = None, seed: int = 0, hint: str | None = None,
+                 adapter: str | None = None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -98,7 +99,13 @@ class HFPolicy:
         torch.manual_seed(seed)  # only matters when temperature > 0
         self.device = device or pick_device()
         self.tok = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype=getattr(torch, dtype)).to(self.device).eval()
+        self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype=getattr(torch, dtype)).to(self.device)
+        if adapter:  # a LoRA adapter from GRPO training: merge it so generation runs at base-model speed
+            from peft import PeftModel
+
+            self.model = PeftModel.from_pretrained(self.model, adapter).merge_and_unload()
+        self.model = self.model.eval()
+        self.adapter = adapter
         self.calls = self.prompt_tokens = self.new_tokens = 0
         self.seconds = 0.0
 

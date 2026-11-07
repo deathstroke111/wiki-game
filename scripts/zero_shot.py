@@ -37,6 +37,8 @@ def main() -> None:
                     help="also accept a bare/```json title (separates format failures from navigation failures)")
     ap.add_argument("--feedback", action="store_true",
                     help="env tells the model why its last answer was invalid (changes the observation)")
+    ap.add_argument("--adapter", default=None, help="LoRA adapter dir from GRPO training (evaluates the trained model)")
+    ap.add_argument("--name", default=None, help="policy/experiment name for W&B (default derived from model+flags)")
     ap.add_argument("--no-wandb", action="store_true", help="skip W&B (local JSONL only)")
     a = ap.parse_args()
 
@@ -45,13 +47,13 @@ def main() -> None:
     pairs = {k: v[: a.n_per_hop] for k, v in pool.items()}
     t0 = time.time()
     policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient,
-                      temperature=a.temperature, seed=a.seed)
+                      temperature=a.temperature, seed=a.seed, adapter=a.adapter)
     print(f"loaded {a.model} on {policy.device} in {time.time() - t0:.0f}s", flush=True)
 
     short = a.model.split("/")[-1].lower()
-    name = f"zeroshot-{short}" + ("-lenient" if a.lenient else "") + ("-feedback" if a.feedback else "")
+    name = a.name or (f"zeroshot-{short}" + ("-lenient" if a.lenient else "") + ("-feedback" if a.feedback else ""))
     cfg = {"policy": name, "model": a.model, "decoding": "greedy" if a.temperature == 0 else f"sample(T={a.temperature})",
-           "temperature": a.temperature, "sample_seed": a.seed, "system_in_user": policy.system_in_user, "prompt_hint": policy.hint, "max_new_tokens": a.max_new_tokens, "hops": a.hops,
+           "temperature": a.temperature, "sample_seed": a.seed, "system_in_user": policy.system_in_user, "prompt_hint": policy.hint, "adapter": a.adapter, "max_new_tokens": a.max_new_tokens, "hops": a.hops,
            "n_per_hop": a.n_per_hop, "max_steps": a.max_steps, "seed": 0, "device": policy.device,
            "lenient_parse": a.lenient, "feedback": a.feedback}
     env = WikiGameEnv(graph, max_steps=a.max_steps, seed=0, feedback=a.feedback)
@@ -75,7 +77,8 @@ def main() -> None:
     metrics.update({f"gen_{k}": v for k, v in policy.stats().items()})
     print("\n" + " ".join(f"{k}={v:.3f}" for k, v in metrics.items() if k.startswith(("success", "invalid", "path_len"))))
     if not a.no_wandb:
-        run = init_run(name, "baseline", cfg, graph, a.graph_name, tags=["zero-shot", "llm"])
+        run = init_run(name, "eval" if a.adapter else "baseline", cfg, graph, a.graph_name,
+                       tags=["grpo-eval" if a.adapter else "zero-shot", "llm"])
         log_eval(run, metrics, step=0)
         log_episodes(run, episodes, step=0, name="eval")
         print("W&B:", run.url)
