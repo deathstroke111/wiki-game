@@ -91,6 +91,27 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
 - Suggested first CUDA session: short dry run (`--max-steps 5`), check peak memory, `frac_reward_zero_std`, cutoff rate
   and step time; then stage 1; eval a checkpoint; ask the user before stage 2 and before any long run.
 
+## CUDA box notes (written 2026-11-08 by the agent on the RTX machine, for the Mac agent)
+- **The "rented CUDA box" is a Windows 11 PC** (Git Bash + PowerShell; RTX 5070 Ti 16 GB, 64 GB RAM, host Gaming-Machine),
+  not Linux. The hook and `detect_machine()` now accept Windows + working `nvidia-smi` -> CUDA (committed).
+- torch: uv picked a CPU-only wheel on Windows, so `pyproject.toml` pins the `pytorch-cu132` index for win32/linux only
+  (Blackwell sm_120 needs CUDA >= 12.8). macOS still resolves the PyPI wheel (MPS). `uv.lock` changed: `uv sync` on the Mac.
+- No vLLM on Windows: generation is plain HF. `tests/test_app_*.py` need `--group app`; the other 40 tests pass here.
+- Windows gotchas: print non-ASCII (R1 special tokens) with `python -I -X utf8` (`-I` ignores `PYTHONUTF8`);
+  `data/wikispeedia.json` was copied in by the user (rebuild needs the raw SNAP files, not on this box).
+- Power: sleep/hibernate are "never" on AC, so long runs are safe. Logs: `data/logs/*.log` (gitignored).
+- **Dry run (5 steps, defaults: G=8, 4 prompts/step, micro-batch 4, cap 1024, R1-1.5B bf16 + LoRA r16):**
+  ~85-105 s/step (so 300 steps ~ 7.5 h), peak VRAM 8.6 GB (lots of headroom: could raise `--micro-batch`), `frac_reward_zero_std`
+  0, grad_norm ~0.06. Untrained R1: invalid 94-97% (unparseable ~90%), cutoff at 1024 tokens 44-50%, closer 0-3%.
+  Sampled 8 completions by hand at one start state: all ramble ("Alternatively, maybe...") to the cap with no `<answer>`;
+  the reward code scored them correctly, so the high invalid rate is model behaviour, not a plumbing bug.
+  Early stage-1 learning is therefore mostly "finish and emit the tag"; watch `env/invalid_rate` and `env/cutoff_rate` fall first.
+- `grpo_train.py` now has `--save-total-limit` (default 0 = keep ALL checkpoints, so each can be evaluated later).
+  Checkpoints are LoRA adapters in `data/ckpt/<out>/checkpoint-<step>`; `zero_shot.py --adapter <dir>` loads them.
+  Trainer-level resume is not exposed; `--resume-adapter` restores weights only (no optimizer state).
+- **Stage 1 main run launched 2026-11-08 ~02:55 IST:** `--stage 1 --max-completion 1024 --max-steps 300 --save-steps 25
+  --out data/ckpt/grpo-step-r1-stage1`, W&B run `grpo-step-r1-1.5b-stage1-cuda-2419725` (group grpo-per-step).
+
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
 - R1 baseline at 50/hop (ask the user; ~25 s/call on Mac, much faster on CUDA).
