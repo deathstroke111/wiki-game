@@ -28,7 +28,8 @@ Diagnostics (health flags, reward breakdown) · Baselines (random/oracle/human/m
 ## GRPO training (per-step reward)
 
 One training example is one game state; the model samples G answers and each is scored by taking that move in the
-env (`grpo_reward.StepReward`: +1 closer / 0 sideways / -1 farther, step cost, success bonus, invalid = -2).
+env (`grpo_reward.StepReward`: +1 closer / 0 sideways / -1 farther, step cost, success bonus; invalid answers are ranked: real page but not a legal move -1.5 < non-existent title -1.75
+< unparseable -2.0 < cut off at the token cap -2.25; `--flat-invalid` gives every invalid answer -2 for an ablation).
 States come from `states.sample_states` (fresh starts, shortest-path prefixes, noisy walks; never the eval pairs).
 
 ```bash

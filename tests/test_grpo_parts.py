@@ -74,8 +74,9 @@ def test_reward_ordering_on_real_states(graph):
         rc = reward.score(ans(graph.titles[closer[0]]), *args)[0]
         rf = reward.score(ans(graph.titles[farther[0]]), *args)[0]
         ri = reward.score("no tags at all", *args)[0]
-        rt = reward.score(ans(graph.titles[cur]), *args)[0]  # re-picking the current page
-        assert rc > rf > ri and ri == rt, (rc, rf, ri, rt)
+        rt = reward.score(ans(graph.titles[cur]), *args)[0]  # re-picking the current page: real page, not a legal move
+        ru = reward.score(ans("No such page"), *args)[0]
+        assert rc > rf > rt > ru > ri, (rc, rf, rt, ru, ri)
         checked += 1
     assert checked >= 5
 
@@ -88,7 +89,8 @@ def test_reward_call_logs_metrics_and_cutoffs(graph):
     out = sr(prompts=[r["prompt"] for r in rows], completions=comps, source=[r["source"] for r in rows],
              target=[r["target"] for r in rows], path=[r["path"] for r in rows], n_invalid=[0] * 4,
              completion_ids=[[0] * 10, [0] * 3, [0] * 10, [0] * 2], log_metric=lambda k, v: logged.__setitem__(k, v))
-    assert len(out) == 4 and all(o < -1.9 for o in out)  # all invalid -> shaped floor (-2) minus step cost
+    # unparseable and cut off: -2.0 -0.25 -0.02 ; non-existent title, finished in time: -1.75 -0.02
+    assert [round(o, 2) for o in out] == [-2.27, -1.77, -2.27, -1.77]
     assert logged["env/invalid_rate"] == 1.0 and logged["env/cutoff_rate"] == 0.5  # two ran to the cap w/o </answer>
     assert logged["env/invalid/unparseable"] == 0.5 and logged["env/invalid/unknown_title"] == 0.5
 

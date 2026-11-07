@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -85,7 +85,13 @@ class RewardConfig:
     # Invalid answers then score shaped_invalid instead of invalid, which is below every valid move:
     # worst valid = -shaping - step_cost - dead_end, so shaped_invalid must stay under that.
     shaping: float = 0.0
-    shaped_invalid: float = -2.0
+    shaped_invalid: float = -2.0  # fallback for any cause not in invalid_by_cause (and the flat-penalty ablation)
+    # With shaping on, invalid answers are RANKED by how close they were to a legal move (all below the worst valid
+    # move, -1 shaping - 0.2 dead end): a real page that just isn't a legal choice < a title that doesn't exist <
+    # unparseable output. Empty dict = flat shaped_invalid for every cause.
+    invalid_by_cause: dict = field(default_factory=lambda: {
+        "not_linked": -1.5, "target_not_linked": -1.5, "current_page": -1.5, "revisit": -1.5,
+        "unknown_title": -1.75, "unparseable": -2.0})
 
 
 class WikiGameEnv(gym.Env):
@@ -189,7 +195,7 @@ class WikiGameEnv(gym.Env):
         cause = classify_invalid(self.graph, self.cur, self.visited, self.target, action)
         if cause is not None:
             self.invalid += 1
-            reward += self.rc.shaped_invalid if self.rc.shaping > 0 else self.rc.invalid
+            reward += self.rc.invalid_by_cause.get(cause, self.rc.shaped_invalid) if self.rc.shaping > 0 else self.rc.invalid
             truncated = self.invalid >= self.max_invalid or self.steps + self.invalid >= self.max_steps
             info["reason"] = "invalid_action"
             info["cause"] = cause

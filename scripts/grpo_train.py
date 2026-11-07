@@ -55,6 +55,8 @@ def main() -> None:
     ap.add_argument("--mix", type=float, nargs=3, default=[0.4, 0.3, 0.3], metavar=("START", "OPTIMAL", "NOISY"))
     ap.add_argument("--feedback", action="store_true", help="show the invalid-answer feedback line (env flag)")
     ap.add_argument("--p-post-invalid", type=float, default=0.0, help="share of states right after an invalid answer")
+    ap.add_argument("--flat-invalid", action="store_true",
+                    help="ablation: every invalid answer scores the same -2 instead of the ranked tiers")
     ap.add_argument("--max-steps-game", type=int, default=10)
     ap.add_argument("--no-wandb", action="store_true")
     a = ap.parse_args()
@@ -83,7 +85,7 @@ def main() -> None:
     dataset = Dataset.from_list(rows)
     print(f"{len(rows)} training states: " + str({k: sum(r['kind'] == k for r in rows) for k in ('start', 'optimal', 'noisy')}))
 
-    reward_cfg = RewardConfig(shaping=1.0)
+    reward_cfg = RewardConfig(shaping=1.0, invalid_by_cause={} if a.flat_invalid else RewardConfig().invalid_by_cause)
     reward_fn = StepReward(graph, reward_cfg, max_completion_length=a.max_completion, max_steps=a.max_steps_game,
                            feedback=a.feedback)
 

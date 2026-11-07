@@ -118,7 +118,22 @@ def test_shaped_reward_ordering_closer_sideways_farther_invalid(graph):
     env.reset(options={"source": 0, "target": 3})
     r_invalid = env.step("Nope")[1]
     assert r_closer > 0.9 and r_farther < 0 and r_invalid < r_farther < r_closer
-    assert r_invalid <= -2.0
+    assert abs(r_invalid - (-0.02 - 1.75)) < 1e-9  # "Nope" is a non-existent title: its own tier
+
+
+def test_invalid_tiers_are_ranked_and_flat_ablation(graph):
+    from wikigame.env import RewardConfig
+
+    def r(answer, **kw):
+        env = WikiGameEnv(graph, reward=RewardConfig(shaping=1.0, **kw), max_invalid=10, seed=0)
+        env.reset(options={"source": 0, "target": 3})
+        return env.step(answer)[1]
+
+    # real page but not linked (C) > title that does not exist > unparseable
+    assert r("C") > r("Nope") > r(None)
+    assert r("C") < r("X")  # every invalid tier stays below even the worst valid move (dead end, farther)
+    flat = {"invalid_by_cause": {}}
+    assert r("C", **flat) == r("Nope", **flat) == r(None, **flat)  # --flat-invalid ablation: one score
 
 
 def test_shaping_is_clipped_and_recorded(graph):

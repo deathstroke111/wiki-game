@@ -237,7 +237,8 @@ def reward_breakdown(episodes: list[dict], reward_cfg: dict | None = None) -> pd
         shaped = rc["shaping"] > 0
         parts = {"success bonus": rc["success"] if e["success"] else 0.0,
                  "step cost": -rc["step_cost"] * calls,
-                 "invalid penalty": (rc["shaped_invalid"] if shaped else rc["invalid"]) * e["n_invalid"],
+                 "invalid penalty": sum((rc["invalid_by_cause"].get(st.get("cause"), rc["shaped_invalid"]) if shaped
+                                        else rc["invalid"]) for st in e["steps"] if not st["valid"]),
                  "dead-end penalty": rc["dead_end"] if e["end_reason"] == "dead_end" else 0.0}
         if shaped:
             parts["progress shaping"] = sum(st.get("shaping_reward", 0.0) for st in e["steps"])

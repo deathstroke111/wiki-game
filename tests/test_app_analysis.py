@@ -221,3 +221,13 @@ def test_reward_breakdown_reconciles_with_shaping(graph):
     ep = run_episode(WikiGameEnv(graph, reward=rc, seed=0), pol, options={"source": 0, "target": 7}).to_dict()
     rb = reward_breakdown([ep], vars(rc))
     assert "progress shaping" in rb.columns and rb.residual.abs().max() < 1e-9
+
+
+def test_reward_breakdown_reconciles_with_ranked_invalid_tiers(graph):
+    from wikigame.env import RewardConfig
+    rc = RewardConfig(shaping=0.5)
+    answers = iter(["junk", '<answer>{"title": "Nope"}</answer>', '<answer>{"title": "A"}</answer>'])  # 3 different tiers
+    pol = lambda o, e: next(answers, None) or oracle_policy()(o, e)  # noqa: E731
+    ep = run_episode(WikiGameEnv(graph, reward=rc, max_invalid=5, seed=0), pol, options={"source": 0, "target": 7}).to_dict()
+    assert {s["cause"] for s in ep["steps"] if not s["valid"]} == {"unparseable", "unknown_title", "current_page"}
+    assert reward_breakdown([ep], vars(rc)).residual.abs().max() < 1e-9
