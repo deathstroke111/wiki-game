@@ -107,12 +107,26 @@ class WikiGameEnv(gym.Env):
         self.feedback = feedback  # if True, the observation after an invalid action says why it was invalid
         self._feedback_msg: str | None = None
         self._dist: dict[int, int] | None = None  # BFS distance-to-target map, only when reward shaping is on
+        self._dist_cache: dict[int, dict[int, int]] = {}  # per target; training re-visits the same targets a lot
         self.rc = reward or RewardConfig()
         self.rng = random.Random(seed)
         self.observation_space = spaces.Text(max_length=100_000)
         self.action_space = spaces.Text(max_length=1_000)
 
     # -- helpers ---------------------------------------------------------
+    def _dist_for(self, target: int) -> dict[int, int] | None:
+        if self.rc.shaping <= 0:
+            return None
+        if target not in self._dist_cache:
+            if len(self._dist_cache) >= 512:
+                self._dist_cache.clear()
+            self._dist_cache[target] = self.graph.dist_to(target)
+        return self._dist_cache[target]
+
+    def _feedback_text(self, cause: str, action: str | None) -> str:
+        left = max(0, self.max_invalid - self.invalid)
+        return _FEEDBACK[cause].replace("{a}", str(action)) + f" ({left} invalid answer{'s' if left != 1 else ''} left)"
+
     def _links(self) -> list[str]:
         """Unvisited outgoing links, capped at max_links_shown (target always kept if linked)."""
         cand = [v for v in self.graph.adj[self.cur] if v not in self.visited]
@@ -150,8 +164,23 @@ class WikiGameEnv(gym.Env):
         self.steps = self.invalid = 0
         self._feedback_msg = None
         self.optimal = self.graph.shortest_dist(self.source, self.target)
-        self._dist = self.graph.dist_to(self.target) if self.rc.shaping > 0 else None
+        self._dist = self._dist_for(self.target)
         return self._obs(), {"optimal_steps": self.optimal, "source": self.source, "target": self.target}
+
+    def set_state(self, source: int, target: int, path: list[int], n_invalid: int = 0,
+                  last_invalid: tuple[str, str | None] | None = None) -> str:
+        """Jump to a mid-game state and return its observation text (like reset, but not at the start).
+
+        ``path`` is the node ids visited so far (path[0] == source, path[-1] == current page). ``last_invalid``
+        = (cause, answer) reproduces the feedback line shown right after an invalid answer (needs feedback=True
+        to be rendered). Used by the GRPO state sampler (prompts) and reward function (scoring one move)."""
+        self.source, self.target = source, target
+        self.path, self.cur, self.visited = list(path), path[-1], set(path)
+        self.steps, self.invalid = len(path) - 1, n_invalid
+        self.optimal = self.graph.shortest_dist(source, target)
+        self._dist = self._dist_for(target)
+        self._feedback_msg = self._feedback_text(*last_invalid) if last_invalid else None
+        return self._obs()
 
     def step(self, action: str | None):
         """action = chosen link title (use parse_action on raw model text first). None = unparseable."""
@@ -164,8 +193,7 @@ class WikiGameEnv(gym.Env):
             truncated = self.invalid >= self.max_invalid or self.steps + self.invalid >= self.max_steps
             info["reason"] = "invalid_action"
             info["cause"] = cause
-            left = max(0, self.max_invalid - self.invalid)
-            self._feedback_msg = _FEEDBACK[cause].replace("{a}", str(action)) + f" ({left} invalid answer{'s' if left != 1 else ''} left)"
+            self._feedback_msg = self._feedback_text(cause, action)
             return self._obs(), reward, False, truncated, info
 
         node = self.graph.id_of(action)

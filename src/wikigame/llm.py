@@ -62,6 +62,15 @@ def merge_system(messages: list[dict], hint: str | None = None) -> list[dict]:
     return rest
 
 
+def training_messages(obs: str, model_id: str, hint: str | None = None) -> list[dict]:
+    """Chat messages exactly as HFPolicy.generate will send them for ``model_id``, so GRPO trains on the same
+    prompt format the zero-shot baselines and evals use (R1: system prompt + brevity hint folded into the user turn)."""
+    msgs = build_messages(obs)
+    if is_r1(model_id):
+        msgs = merge_system(msgs, R1_HINT if hint is None else (hint or None))
+    return msgs
+
+
 def pick_device() -> str:
     import torch
 

@@ -18,6 +18,15 @@ def make_pairs(graph: WikiGraph, hops=(1, 2, 3, 4), n_per_hop: int = 100, seed: 
     return {k: [graph.sample_pair(k, rng) for _ in range(n_per_hop)] for k in hops}
 
 
+EVAL_POOL = 50  # pairs per hop in the shared held-out set that every baseline/eval script draws from
+
+
+def heldout_pairs(graph: WikiGraph, hops=(1, 2, 3, 4)) -> set[tuple[int, int]]:
+    """All (source, target) pairs used by the standard eval (make_pairs defaults, EVAL_POOL per hop). Training
+    must never sample these."""
+    return {p for plist in make_pairs(graph, hops=hops, n_per_hop=EVAL_POOL).values() for p in plist}
+
+
 def summarize(episodes: list[Episode]) -> dict[str, float]:
     """Metrics from a list of episodes: success@k, extra_steps@k (successes only), plus overall rates."""
     m: dict[str, float] = {}
