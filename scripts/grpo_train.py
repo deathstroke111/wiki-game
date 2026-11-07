@@ -49,6 +49,8 @@ def main() -> None:
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--dtype", default="auto", help="auto = bfloat16 on CUDA, float32 elsewhere")
     ap.add_argument("--save-steps", type=int, default=50)
+    ap.add_argument("--save-total-limit", type=int, default=0,
+                    help="keep only the newest N checkpoints (0 = keep all, so every one can be evaluated later)")
     ap.add_argument("--seed", type=int, default=0)
     # states / env
     ap.add_argument("--hops", type=int, nargs="+", default=[1, 2, 3])
@@ -116,7 +118,7 @@ def main() -> None:
         num_generations=a.num_generations, max_completion_length=a.max_completion, temperature=a.temperature,
         per_device_train_batch_size=a.micro_batch, gradient_accumulation_steps=per_step // a.micro_batch,
         gradient_checkpointing=True, bf16=use_cuda and dtype == torch.bfloat16, logging_steps=1,
-        save_steps=a.save_steps, save_total_limit=3, seed=a.seed, remove_unused_columns=False,
+        save_steps=a.save_steps, save_total_limit=a.save_total_limit or None, seed=a.seed, remove_unused_columns=False,
         report_to="none" if a.no_wandb else "wandb", log_completions=not a.no_wandb,
         model_init_kwargs=None,
     )
