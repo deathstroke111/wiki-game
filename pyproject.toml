@@ -29,6 +29,15 @@ llm = [
     "trl>=1.17.1",
 ]
 
+# CUDA torch on Windows/Linux (the RTX is Blackwell, needs a CUDA >= 12.8 build); macOS keeps the PyPI wheel (MPS).
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
