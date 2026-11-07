@@ -117,6 +117,16 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   --out data/ckpt/grpo-step-r1-stage1`. W&B run `ceebhgej` = `grpo-step-r1-1.5b-stage1-cuda-5762c82` (group grpo-per-step).
   Steps 1-2 at ~80-108 s/step => ~7-9 h total. Checkpoints land every 25 steps in `data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
 
+- **Stage 2 is chained to start automatically (user approved 2026-11-08; evals only AFTER training).** Watcher
+  `data/run_stage2_after_stage1.ps1` (gitignored, powershell pid 3276) waits for stage 1's launcher (pid 6280), and only if
+  `data/ckpt/grpo-step-r1-stage1/{wikigame_config.json,adapter_model.safetensors}` exist it runs stage 2:
+  `--stage 2 --max-completion 512 --max-steps 300 --save-steps 25 --seed 1 --resume-adapter data/ckpt/grpo-step-r1-stage1
+  --out data/ckpt/grpo-step-r1-stage2`. `--seed 1` is deliberate: seed 0 would re-sample the exact same 1448 states stage 1
+  used (it consumes ~1200). Progress: `data/logs/chain.log`, `stage2.log/.err`. If stage 1 dies, stage 2 is NOT started
+  (chain.log says so); to continue from a checkpoint use `--resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
+  The resume path was smoke-tested (1 step from the dry-run adapter, 5.1 GB peak). Evals (zero_shot.py --adapter ...
+  --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 50) are to run after both stages, one per checkpoint of interest.
+
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
 - R1 baseline at 50/hop (ask the user; ~25 s/call on Mac, much faster on CUDA).
