@@ -33,6 +33,8 @@ def main() -> None:
     ap.add_argument("--device", default=None)
     ap.add_argument("--lenient", action="store_true",
                     help="also accept a bare/```json title (separates format failures from navigation failures)")
+    ap.add_argument("--feedback", action="store_true",
+                    help="env tells the model why its last answer was invalid (changes the observation)")
     ap.add_argument("--no-wandb", action="store_true", help="skip W&B (local JSONL only)")
     a = ap.parse_args()
 
@@ -44,11 +46,11 @@ def main() -> None:
     print(f"loaded {a.model} on {policy.device} in {time.time() - t0:.0f}s", flush=True)
 
     short = a.model.split("/")[-1].lower()
-    name = f"zeroshot-{short}" + ("-lenient" if a.lenient else "")
+    name = f"zeroshot-{short}" + ("-lenient" if a.lenient else "") + ("-feedback" if a.feedback else "")
     cfg = {"policy": name, "model": a.model, "decoding": "greedy", "max_new_tokens": a.max_new_tokens, "hops": a.hops,
            "n_per_hop": a.n_per_hop, "max_steps": a.max_steps, "seed": 0, "device": policy.device,
-           "lenient_parse": a.lenient}
-    env = WikiGameEnv(graph, max_steps=a.max_steps, seed=0)
+           "lenient_parse": a.lenient, "feedback": a.feedback}
+    env = WikiGameEnv(graph, max_steps=a.max_steps, seed=0, feedback=a.feedback)
     cfg.update(reward=vars(env.rc), max_links_shown=env.max_links_shown)
 
     out = Path("data/runs"); out.mkdir(parents=True, exist_ok=True)

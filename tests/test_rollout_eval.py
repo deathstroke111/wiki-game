@@ -44,6 +44,12 @@ def test_garbage_policy_records_invalid_and_truncates(graph):
     ep = run_episode(env, lambda obs, env: "no answer tags", options={"source": 0, "target": 7})
     assert not ep.success and ep.n_invalid == 3 and ep.n_valid == 0
     assert ep.end_reason == "invalid_action" and ep.path == ["A"]
+    assert [st["cause"] for st in ep.steps] == ["unparseable"] * 3  # cause stored per invalid step
+
+
+def test_valid_steps_have_no_cause(graph):
+    ep = run_episode(WikiGameEnv(graph, seed=0), oracle_policy(), options={"source": 0, "target": 6})
+    assert all(st["cause"] is None for st in ep.steps)
 
 
 def test_episode_serializable(graph):

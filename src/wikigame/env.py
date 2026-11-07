@@ -43,6 +43,36 @@ SYSTEM_PROMPT = (
 )
 
 
+def classify_invalid(graph: WikiGraph, cur: int, visited: set[int], target: int, action: str | None) -> str | None:
+    """Why an action is invalid, or None if it is a legal move.
+
+    Causes: unparseable | unknown_title | current_page | revisit | target_not_linked | not_linked.
+    Pure (no env state) so the analysis app can also backfill episodes recorded before causes were stored.
+    """
+    if action is None:
+        return "unparseable"
+    node = graph.id_of(action)
+    if node is None:
+        return "unknown_title"
+    if node == cur:
+        return "current_page"
+    if node in visited:
+        return "revisit"
+    if node not in graph.adj[cur]:
+        return "target_not_linked" if node == target else "not_linked"
+    return None
+
+
+_FEEDBACK = {
+    "unparseable": "I could not read an answer. Reply with <answer>{\"title\": \"Exact Link Title\"}</answer>.",
+    "unknown_title": "'{a}' is not an article title. Copy a title exactly from the Links list.",
+    "current_page": "You are already on '{a}'. Choose a different link.",
+    "revisit": "'{a}' was already visited. Choose an unvisited link.",
+    "target_not_linked": "'{a}' is the target, but it is not linked from this page. Choose a title from the Links list.",
+    "not_linked": "'{a}' is not linked from this page. Choose a title from the Links list.",
+}
+
+
 @dataclass
 class RewardConfig:
     success: float = 1.0
@@ -63,9 +93,12 @@ class WikiGameEnv(gym.Env):
         max_links_shown: int = 200,
         reward: RewardConfig | None = None,
         seed: int | None = None,
+        feedback: bool = False,
     ):
         self.graph, self.n_hops, self.max_steps = graph, n_hops, max_steps
         self.max_invalid, self.max_links_shown = max_invalid, max_links_shown
+        self.feedback = feedback  # if True, the observation after an invalid action says why it was invalid
+        self._feedback_msg: str | None = None
         self.rc = reward or RewardConfig()
         self.rng = random.Random(seed)
         self.observation_space = spaces.Text(max_length=100_000)
@@ -88,10 +121,11 @@ class WikiGameEnv(gym.Env):
         self.links = self._links()
         trail = " -> ".join(g.titles[v] for v in self.path)
         links = "\n".join(f"- {t}" for t in self.links)
+        note = f"Your last answer was invalid: {self._feedback_msg}\n" if self.feedback and self._feedback_msg else ""
         return (
             f"Target: {g.titles[self.target]}\nTarget summary: {g.summaries[self.target]}\n\n"
             f"Path so far: {trail}\nCurrent article: {g.titles[self.cur]}\n"
-            f"Steps left: {self.max_steps - self.steps}\n\nLinks:\n{links}"
+            f"Steps left: {self.max_steps - self.steps}\n{note}\nLinks:\n{links}"
         )
 
     # -- gym API ---------------------------------------------------------
@@ -106,6 +140,7 @@ class WikiGameEnv(gym.Env):
             self.source, self.target = self.graph.sample_pair(options.get("n_hops", self.n_hops), self.rng)
         self.cur, self.path, self.visited = self.source, [self.source], {self.source}
         self.steps = self.invalid = 0
+        self._feedback_msg = None
         self.optimal = self.graph.shortest_dist(self.source, self.target)
         return self._obs(), {"optimal_steps": self.optimal, "source": self.source, "target": self.target}
 
@@ -113,14 +148,19 @@ class WikiGameEnv(gym.Env):
         """action = chosen link title (use parse_action on raw model text first). None = unparseable."""
         info: dict = {"valid": False}
         reward = -self.rc.step_cost
-        node = self.graph.id_of(action) if action is not None else None
-        if node is None or node not in self.graph.adj[self.cur] or node in self.visited:
+        cause = classify_invalid(self.graph, self.cur, self.visited, self.target, action)
+        if cause is not None:
             self.invalid += 1
             reward += self.rc.invalid
             truncated = self.invalid >= self.max_invalid or self.steps + self.invalid >= self.max_steps
             info["reason"] = "invalid_action"
+            info["cause"] = cause
+            left = max(0, self.max_invalid - self.invalid)
+            self._feedback_msg = _FEEDBACK[cause].replace("{a}", str(action)) + f" ({left} invalid answer{'s' if left != 1 else ''} left)"
             return self._obs(), reward, False, truncated, info
 
+        node = self.graph.id_of(action)
+        self._feedback_msg = None
         info["valid"] = True
         self.cur = node
         self.path.append(node)

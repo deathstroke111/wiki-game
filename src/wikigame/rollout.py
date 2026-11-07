@@ -58,7 +58,8 @@ class EpisodeRecorder:
         ep = self.ep
         ep.total_reward += reward
         ep.steps.append({"chosen": title, "valid": info["valid"], "reward": reward,
-                         "n_links": self._n_links, "text": text})
+                         "n_links": self._n_links, "text": text,
+                         "cause": info.get("cause")})
         if info["valid"]:
             ep.n_valid += 1
             ep.path.append(self.env.graph.titles[self.env.cur])

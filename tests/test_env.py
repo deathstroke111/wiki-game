@@ -58,3 +58,37 @@ def test_parse_action():
     assert parse_action("no tags") is None
     assert parse_action("<answer>not json</answer>") is None
     assert parse_action('<answer>["Foo"]</answer>') is None
+
+
+# ---- invalid causes + feedback ---------------------------------------------------------------------------
+def test_invalid_causes(graph):
+    env = WikiGameEnv(graph, max_invalid=10)
+    env.reset(options={"source": 0, "target": 3})  # A -> ... -> D ; D is not linked from A
+    causes = {a: env.step(a)[4]["cause"] for a in [None, "Nope", "A", "D", "C"]}
+    assert causes == {None: "unparseable", "Nope": "unknown_title", "A": "current_page",
+                      "D": "target_not_linked", "C": "not_linked"}
+    env.step("B")
+    assert env.step("A")[4]["cause"] == "revisit"
+
+
+def test_feedback_only_after_invalid_and_only_when_enabled(graph):
+    def obs_after(feedback, actions):
+        env = WikiGameEnv(graph, seed=0, feedback=feedback)
+        out, _ = env.reset(options={"source": 0, "target": 3})
+        for a in actions:
+            out = env.step(a)[0]
+        return out
+
+    msg = "Your last answer was invalid"
+    assert msg not in obs_after(True, [])  # nothing wrong yet
+    after = obs_after(True, ["D"])
+    assert msg in after and "'D' is the target" in after and "2 invalid answers left" in after
+    assert msg not in obs_after(False, ["D"])  # flag off
+    assert msg not in obs_after(True, ["D", "B"])  # cleared by a valid move
+
+
+def test_flag_off_observation_unchanged(graph):
+    env = WikiGameEnv(graph, seed=0)
+    obs, _ = env.reset(options={"source": 0, "target": 3})
+    assert "Steps left: 10\n\nLinks:\n" in obs
+    assert "Steps left: 10\n\nLinks:\n" in env.step("D")[0]
