@@ -57,9 +57,11 @@ class EpisodeRecorder:
     def record(self, text: str, title: str | None, reward: float, info: dict) -> None:
         ep = self.ep
         ep.total_reward += reward
-        ep.steps.append({"chosen": title, "valid": info["valid"], "reward": reward,
-                         "n_links": self._n_links, "text": text,
-                         "cause": info.get("cause")})
+        step = {"chosen": title, "valid": info["valid"], "reward": reward,
+                "n_links": self._n_links, "text": text, "cause": info.get("cause")}
+        if "shaping_reward" in info:  # only present when RewardConfig.shaping > 0
+            step["shaping_reward"] = info["shaping_reward"]
+        ep.steps.append(step)
         if info["valid"]:
             ep.n_valid += 1
             ep.path.append(self.env.graph.titles[self.env.cur])

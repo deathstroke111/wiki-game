@@ -92,3 +92,40 @@ def test_flag_off_observation_unchanged(graph):
     obs, _ = env.reset(options={"source": 0, "target": 3})
     assert "Steps left: 10\n\nLinks:\n" in obs
     assert "Steps left: 10\n\nLinks:\n" in env.step("D")[0]
+
+
+# ---- shaped reward (off by default) ----------------------------------------------------------------------
+def _shaped_env(graph, **kw):
+    from wikigame.env import RewardConfig
+    return WikiGameEnv(graph, max_invalid=10, reward=RewardConfig(shaping=1.0, **kw), seed=0)
+
+
+def test_shaping_off_by_default_reproduces_old_rewards(graph):
+    env = WikiGameEnv(graph)
+    env.reset(options={"source": 0, "target": 3})
+    _, r, _, _, info = env.step("B")
+    assert abs(r + 0.02) < 1e-9 and "shaping_reward" not in info
+    assert abs(env.step("Nope")[1] - (-0.02 - 0.1)) < 1e-9
+
+
+def test_shaped_reward_ordering_closer_sideways_farther_invalid(graph):
+    # path graph A->B->C->D plus A->X dead end; target D. From A: B is closer, X can't reach D (farther).
+    env = _shaped_env(graph)
+    env.reset(options={"source": 0, "target": 3})
+    r_closer = env.step("B")[1]
+    env.reset(options={"source": 0, "target": 3})
+    r_farther = env.step("X")[1]  # unreachable from X: treated as -1; also a dead end (-0.2)
+    env.reset(options={"source": 0, "target": 3})
+    r_invalid = env.step("Nope")[1]
+    assert r_closer > 0.9 and r_farther < 0 and r_invalid < r_farther < r_closer
+    assert r_invalid <= -2.0
+
+
+def test_shaping_is_clipped_and_recorded(graph):
+    from wikigame.rollout import run_episode
+    env = _shaped_env(graph)
+    ep = run_episode(env, lambda o, e: '<answer>{"title": "B"}</answer>' if e.cur == 0 else
+                     ('<answer>{"title": "C"}</answer>' if e.cur == 1 else '<answer>{"title": "D"}</answer>'),
+                     options={"source": 0, "target": 3})
+    assert ep.success and [s["shaping_reward"] for s in ep.steps] == [1.0, 1.0, 1.0]
+    assert abs(ep.total_reward - (3 * 1.0 + 1.0 - 3 * 0.02)) < 1e-9

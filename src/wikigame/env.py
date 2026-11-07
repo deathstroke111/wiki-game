@@ -79,6 +79,13 @@ class RewardConfig:
     step_cost: float = 0.02
     invalid: float = -0.1  # unknown title / revisit / unparseable
     dead_end: float = -0.2
+    # Optional progress shaping for per-step training (OFF by default: eval reward stays unshaped).
+    # potential = -(BFS distance to target); each valid move adds shaping * clip(d_before - d_after, -1, 1),
+    # i.e. +1 closer / 0 sideways / -1 farther (or into a region that cannot reach the target).
+    # Invalid answers then score shaped_invalid instead of invalid, which is below every valid move:
+    # worst valid = -shaping - step_cost - dead_end, so shaped_invalid must stay under that.
+    shaping: float = 0.0
+    shaped_invalid: float = -2.0
 
 
 class WikiGameEnv(gym.Env):
@@ -99,6 +106,7 @@ class WikiGameEnv(gym.Env):
         self.max_invalid, self.max_links_shown = max_invalid, max_links_shown
         self.feedback = feedback  # if True, the observation after an invalid action says why it was invalid
         self._feedback_msg: str | None = None
+        self._dist: dict[int, int] | None = None  # BFS distance-to-target map, only when reward shaping is on
         self.rc = reward or RewardConfig()
         self.rng = random.Random(seed)
         self.observation_space = spaces.Text(max_length=100_000)
@@ -142,6 +150,7 @@ class WikiGameEnv(gym.Env):
         self.steps = self.invalid = 0
         self._feedback_msg = None
         self.optimal = self.graph.shortest_dist(self.source, self.target)
+        self._dist = self.graph.dist_to(self.target) if self.rc.shaping > 0 else None
         return self._obs(), {"optimal_steps": self.optimal, "source": self.source, "target": self.target}
 
     def step(self, action: str | None):
@@ -151,7 +160,7 @@ class WikiGameEnv(gym.Env):
         cause = classify_invalid(self.graph, self.cur, self.visited, self.target, action)
         if cause is not None:
             self.invalid += 1
-            reward += self.rc.invalid
+            reward += self.rc.shaped_invalid if self.rc.shaping > 0 else self.rc.invalid
             truncated = self.invalid >= self.max_invalid or self.steps + self.invalid >= self.max_steps
             info["reason"] = "invalid_action"
             info["cause"] = cause
@@ -162,6 +171,11 @@ class WikiGameEnv(gym.Env):
         node = self.graph.id_of(action)
         self._feedback_msg = None
         info["valid"] = True
+        if self._dist is not None:
+            before, after = self._dist.get(self.cur), self._dist.get(node)
+            gain = -1 if before is None or after is None else max(-1, min(1, before - after))
+            info["shaping_reward"] = self.rc.shaping * gain
+            reward += info["shaping_reward"]
         self.cur = node
         self.path.append(node)
         self.visited.add(node)

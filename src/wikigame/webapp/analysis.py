@@ -234,10 +234,13 @@ def reward_breakdown(episodes: list[dict], reward_cfg: dict | None = None) -> pd
     rows = []
     for i, e in enumerate(episodes):
         calls = e["n_valid"] + e["n_invalid"]
+        shaped = rc["shaping"] > 0
         parts = {"success bonus": rc["success"] if e["success"] else 0.0,
                  "step cost": -rc["step_cost"] * calls,
-                 "invalid penalty": rc["invalid"] * e["n_invalid"],
+                 "invalid penalty": (rc["shaped_invalid"] if shaped else rc["invalid"]) * e["n_invalid"],
                  "dead-end penalty": rc["dead_end"] if e["end_reason"] == "dead_end" else 0.0}
+        if shaped:
+            parts["progress shaping"] = sum(st.get("shaping_reward", 0.0) for st in e["steps"])
         rows.append({"ep_idx": i, "n_hops": e.get("n_hops"), "end_reason": e["end_reason"],
                      "success": e["success"], **parts, "total": e["total_reward"],
                      "residual": e["total_reward"] - sum(parts.values())})

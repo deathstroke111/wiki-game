@@ -67,7 +67,7 @@ rb = reward_breakdown(episodes, run.config.get("reward"))
 left, right = st.columns(2)
 with left:
     st.markdown("**Where reward comes from (mean per episode)**")
-    comp = ["success bonus", "step cost", "invalid penalty", "dead-end penalty"]
+    comp = [c for c in ["success bonus", "step cost", "invalid penalty", "dead-end penalty", "progress shaping"] if c in rb.columns]
     m = rb.assign(outcome=rb.end_reason).groupby("outcome")[comp].mean().reset_index().melt(
         id_vars="outcome", var_name="component", value_name="mean reward")
     st.plotly_chart(px.bar(m, x="outcome", y="mean reward", color="component", barmode="relative"), width="stretch")

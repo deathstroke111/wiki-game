@@ -211,3 +211,13 @@ def test_summarize_cause_rates_sum_to_invalid_rate(graph):
     eps = [run_episode(WikiGameEnv(graph, max_invalid=3, seed=0), lambda o, e: "x", options={"source": 0, "target": 7}, n_hops=2)]
     m = summarize(eps)
     assert abs(sum(v for k, v in m.items() if k.startswith("invalid_cause/")) - m["invalid_rate"]) < 1e-9
+
+
+def test_reward_breakdown_reconciles_with_shaping(graph):
+    from wikigame.env import RewardConfig
+    rc = RewardConfig(shaping=0.5)
+    answers = iter(["junk"])
+    pol = lambda o, e: next(answers, None) or oracle_policy()(o, e)  # noqa: E731
+    ep = run_episode(WikiGameEnv(graph, reward=rc, seed=0), pol, options={"source": 0, "target": 7}).to_dict()
+    rb = reward_breakdown([ep], vars(rc))
+    assert "progress shaping" in rb.columns and rb.residual.abs().max() < 1e-9
