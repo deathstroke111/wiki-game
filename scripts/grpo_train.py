@@ -52,6 +52,10 @@ def main() -> None:
     ap.add_argument("--save-total-limit", type=int, default=0,
                     help="keep only the newest N checkpoints (0 = keep all, so every one can be evaluated later)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--gpu-mem-fraction", type=float, default=0.75,
+                    help="cap this process's CUDA memory at this fraction of the GPU (0 = off). On Windows (WDDM) the "
+                         "driver silently spills over-subscribed VRAM to system RAM, which made steps 4x slower; the cap "
+                         "makes PyTorch free its cache instead (peak allocated is only ~9 GB)")
     # states / env
     ap.add_argument("--hops", type=int, nargs="+", default=[1, 2, 3])
     ap.add_argument("--mix", type=float, nargs=3, default=[0.4, 0.3, 0.3], metavar=("START", "OPTIMAL", "NOISY"))
@@ -71,6 +75,8 @@ def main() -> None:
 
     machine = detect_machine()
     use_cuda = torch.cuda.is_available()
+    if use_cuda and a.gpu_mem_fraction:
+        torch.cuda.set_per_process_memory_fraction(a.gpu_mem_fraction)
     dtype = torch.bfloat16 if (a.dtype == "bfloat16" or (a.dtype == "auto" and use_cuda)) else torch.float32
     short = a.model.split("/")[-1].lower().replace("deepseek-r1-distill-qwen-", "r1-").replace("-instruct", "")
     experiment = f"grpo-step-{short}-stage{a.stage}"
