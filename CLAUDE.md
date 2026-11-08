@@ -117,10 +117,23 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   --out data/ckpt/grpo-step-r1-stage1`. W&B run `ceebhgej` = `grpo-step-r1-1.5b-stage1-cuda-5762c82` (group grpo-per-step).
   Steps 1-2 at ~80-108 s/step => ~7-9 h total. Checkpoints land every 25 steps in `data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
 
+- **WDDM VRAM spill = 4x slowdown (found 2026-11-08, cost ~3 h).** At step ~10 of the first stage-1 run I started a second GPU
+  job (a 1-step resume test) and the training process's CUDA cache ballooned to 15.3 GB dedicated + 4.2 GB spilled into shared
+  system RAM (Get-Counter `\GPU Process Memory(*)`), even though `sys/cuda_peak_gb` stayed ~8.8. Windows then silently pages over
+  PCIe: steps went 85 s -> 380-480 s, GPU 99% "utilized" but only ~87 W of 300 W, no throttling. It never recovered.
+  **Never run a second GPU job while training. Diagnose with nvidia-smi power draw + Get-Counter shared usage.**
+  Fix: `grpo_train.py --gpu-mem-fraction` (default 0.75, `torch.cuda.set_per_process_memory_fraction`) so PyTorch frees its cache
+  instead; back to 83-93 s/step at 10.6 GB. (`PYTORCH_CUDA_ALLOC_CONF=...max_split_size_mb` did NOT help; don't use it.)
+- **Run history:** first stage-1 run got to step 32 (W&B `ceebhgej`, killed as too slow; its `checkpoint-25` is the restart
+  point). The relaunch with the allocator env var (W&B run from ~06:07) was also aborted after 3 steps. Current run =
+  **stage "1b"**: `--stage 1b --max-steps 275 --seed 2 --resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-25
+  --out data/ckpt/grpo-step-r1-stage1b` (275 = 300 minus the 25 already done; seed 2 = fresh states), launcher pid 7780,
+  logs `data/logs/stage1b.log/.err`. So effective stage 1 = checkpoint-25 of `stage1` + 275 steps of `stage1b`; optimizer state
+  was not carried over (resume restores adapter weights only). Several aborted W&B runs sit in the project; don't delete without asking.
 - **Stage 2 is chained to start automatically (user approved 2026-11-08; evals only AFTER training).** Watcher
-  `data/run_stage2_after_stage1.ps1` (gitignored, powershell pid 3276) waits for stage 1's launcher (pid 6280), and only if
-  `data/ckpt/grpo-step-r1-stage1/{wikigame_config.json,adapter_model.safetensors}` exist it runs stage 2:
-  `--stage 2 --max-completion 512 --max-steps 300 --save-steps 25 --seed 1 --resume-adapter data/ckpt/grpo-step-r1-stage1
+  `data/run_stage2_after_stage1b.ps1` (gitignored, powershell pid 21032) waits for the stage-1b launcher (pid 7780), and only if
+  `data/ckpt/grpo-step-r1-stage1b/{wikigame_config.json,adapter_model.safetensors}` exist it runs stage 2:
+  `--stage 2 --max-completion 512 --max-steps 300 --save-steps 25 --seed 1 --resume-adapter data/ckpt/grpo-step-r1-stage1b
   --out data/ckpt/grpo-step-r1-stage2`. `--seed 1` is deliberate: seed 0 would re-sample the exact same 1448 states stage 1
   used (it consumes ~1200). Progress: `data/logs/chain.log`, `stage2.log/.err`. If stage 1 dies, stage 2 is NOT started
   (chain.log says so); to continue from a checkpoint use `--resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
