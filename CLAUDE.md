@@ -56,7 +56,7 @@ code here is our own). Everything below is the state of play; the code is the so
 Findings: ~60% of Qwen's actions are invalid (not navigation errors). Dominant cause is naming the target page even
 when it is not linked (~40-47% of all actions), then re-picking the current page (~5-9%). Feedback helps only a little
 (CIs overlap); the model mostly ignores it. n=10/hop numbers from early runs were too optimistic; trust the 50/hop ones.
-**No R1 baseline exists yet** (only a 4-game probe), by the user's choice: "see how it performs after training".
+R1 baseline: none on the Mac (by the user's choice); the untrained-R1 baseline was run later on the CUDA box at 20 pairs/hop (13.8%, see "CUDA box: state of play").
 
 ## Model decision: DeepSeek-R1-Distill-Qwen-1.5B (`deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`)
 The user switched to this because Qwen-Instruct follows the format poorly. Handled in `llm.py`: system prompt (+ a
@@ -91,68 +91,54 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
 - Suggested first CUDA session: short dry run (`--max-steps 5`), check peak memory, `frac_reward_zero_std`, cutoff rate
   and step time; then stage 1; eval a checkpoint; ask the user before stage 2 and before any long run.
 
-## CUDA box notes (written 2026-11-08 by the agent on the RTX machine, for the Mac agent)
-- **The "rented CUDA box" is a Windows 11 PC** (Git Bash + PowerShell; RTX 5070 Ti 16 GB, 64 GB RAM, host Gaming-Machine),
-  not Linux. The hook and `detect_machine()` now accept Windows + working `nvidia-smi` -> CUDA (committed).
-- torch: uv picked a CPU-only wheel on Windows, so `pyproject.toml` pins the `pytorch-cu132` index for win32/linux only
-  (Blackwell sm_120 needs CUDA >= 12.8). macOS still resolves the PyPI wheel (MPS). `uv.lock` changed: `uv sync` on the Mac.
-- No vLLM on Windows: generation is plain HF. `tests/test_app_*.py` need `--group app`; the other 40 tests pass here.
-- Windows gotchas: print non-ASCII (R1 special tokens) with `python -I -X utf8` (`-I` ignores `PYTHONUTF8`);
-  `data/wikispeedia.json` was copied in by the user (rebuild needs the raw SNAP files, not on this box).
-- Power: sleep/hibernate are "never" on AC, so long runs are safe. Logs: `data/logs/*.log` (gitignored).
-- **Dry run (5 steps, defaults: G=8, 4 prompts/step, micro-batch 4, cap 1024, R1-1.5B bf16 + LoRA r16):**
-  ~85-105 s/step (so 300 steps ~ 7.5 h), peak VRAM 8.6 GB (lots of headroom: could raise `--micro-batch`), `frac_reward_zero_std`
-  0, grad_norm ~0.06. Untrained R1: invalid 94-97% (unparseable ~90%), cutoff at 1024 tokens 44-50%, closer 0-3%.
-  Sampled 8 completions by hand at one start state: all ramble ("Alternatively, maybe...") to the cap with no `<answer>`;
-  the reward code scored them correctly, so the high invalid rate is model behaviour, not a plumbing bug.
-  Early stage-1 learning is therefore mostly "finish and emit the tag"; watch `env/invalid_rate` and `env/cutoff_rate` fall first.
-- `grpo_train.py` now has `--save-total-limit` (default 0 = keep ALL checkpoints, so each can be evaluated later).
-  Checkpoints are LoRA adapters in `data/ckpt/<out>/checkpoint-<step>`; `zero_shot.py --adapter <dir>` loads them.
-  Trainer-level resume is not exposed; `--resume-adapter` restores weights only (no optimizer state).
-- **Always run training with `PYTHONUTF8=1 PYTHONIOENCODING=utf-8`.** The first stage-1 launch crashed at step 1 with
-  `UnicodeEncodeError` (cp1252 console) because TRL's `log_completions` prints sampled text (it contained 'ố'); the W&B-off
-  dry run could not hit it. That aborted W&B run `k8mnksk6` (`...-cuda-2419725`, no useful data) is left in the project; don't delete without asking.
-- **Stage 1 main run relaunched 2026-11-08 ~03:10 IST**, detached via PowerShell `Start-Process` (so no tool timeout can kill it;
-  stdout/stderr -> `data/logs/stage1.log` / `stage1.err`): `--stage 1 --max-completion 1024 --max-steps 300 --save-steps 25
-  --out data/ckpt/grpo-step-r1-stage1`. W&B run `ceebhgej` = `grpo-step-r1-1.5b-stage1-cuda-5762c82` (group grpo-per-step).
-  Steps 1-2 at ~80-108 s/step => ~7-9 h total. Checkpoints land every 25 steps in `data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
+## CUDA box: state of play (written 2026-11-08/09 by the agent on the RTX machine, for the Mac agent)
+**The "rented CUDA box" is a Windows 11 PC** (Git Bash + PowerShell; RTX 5070 Ti 16 GB, 64 GB RAM, host Gaming-Machine), not Linux.
+Training and evals are FINISHED; results below. Hook and `detect_machine()` accept Windows + working `nvidia-smi` -> CUDA.
 
-- **WDDM VRAM spill = 4x slowdown (found 2026-11-08, cost ~3 h).** At step ~10 of the first stage-1 run I started a second GPU
-  job (a 1-step resume test) and the training process's CUDA cache ballooned to 15.3 GB dedicated + 4.2 GB spilled into shared
-  system RAM (Get-Counter `\GPU Process Memory(*)`), even though `sys/cuda_peak_gb` stayed ~8.8. Windows then silently pages over
-  PCIe: steps went 85 s -> 380-480 s, GPU 99% "utilized" but only ~87 W of 300 W, no throttling. It never recovered.
-  **Never run a second GPU job while training. Diagnose with nvidia-smi power draw + Get-Counter shared usage.**
-  Fix: `grpo_train.py --gpu-mem-fraction` (default 0.75, `torch.cuda.set_per_process_memory_fraction`) so PyTorch frees its cache
-  instead; back to 83-93 s/step at 10.6 GB. (`PYTORCH_CUDA_ALLOC_CONF=...max_split_size_mb` did NOT help; don't use it.)
-- **Run history:** first stage-1 run got to step 32 (W&B `ceebhgej`, killed as too slow; its `checkpoint-25` is the restart
-  point). The relaunch with the allocator env var (W&B run from ~06:07) was also aborted after 3 steps. Current run =
-  **stage "1b"**: `--stage 1b --max-steps 275 --seed 2 --resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-25
-  --out data/ckpt/grpo-step-r1-stage1b` (275 = 300 minus the 25 already done; seed 2 = fresh states), launcher pid 7780,
-  logs `data/logs/stage1b.log/.err`. So effective stage 1 = checkpoint-25 of `stage1` + 275 steps of `stage1b`; optimizer state
-  was not carried over (resume restores adapter weights only). **W&B cleanup (user-approved 2026-11-08):** deleted the crashed run
-  `k8mnksk6` and the 3-step aborted relaunch `pm3m0btf`. Kept: `ceebhgej` (first stage-1 run, steps 1-32; source of checkpoint-25
-  and the only record of the slowdown; shows state "running" because it was killed, not finished) and the LIVE stage-1b run
-  `kkqk572s` (`...stage1b-cuda-02e16d3+dirty`, "+dirty" only because grpo_train.py was uncommitted at launch). Also left alone:
-  the Mac's early duplicates `henp9oon`, `pumln526`.
-- **Learning curve of stage 1b (20-step means, 2026-11-08 at step 162/275):** invalid rate 96% -> 80% (steps 61-80) -> 50% (101-120)
-  -> 35% (141-162); cutoff 53% -> 13-16%; closer-move rate 2% -> 31%; per-step success 2% -> 22-30%; mean reward -2.04 -> -0.2;
-  completion length 838 -> ~570 tokens. Step time steady ~85 s (wall ~106 s/step incl. checkpoint/W&B overhead).
-  So the slow start was just that: the lr 1e-5 / LoRA r16 defaults do learn, no hyperparameter change needed so far.
-- **Stage 2 is chained to start automatically (user approved 2026-11-08; evals only AFTER training).** Watcher
-  `data/run_stage2_after_stage1b.ps1` (gitignored, powershell pid 21032) waits for the stage-1b launcher (pid 7780), and only if
-  `data/ckpt/grpo-step-r1-stage1b/{wikigame_config.json,adapter_model.safetensors}` exist it runs stage 2:
-  `--stage 2 --max-completion 512 --max-steps 300 --save-steps 25 --seed 1 --resume-adapter data/ckpt/grpo-step-r1-stage1b
-  --out data/ckpt/grpo-step-r1-stage2`. `--seed 1` is deliberate: seed 0 would re-sample the exact same 1448 states stage 1
-  used (it consumes ~1200). Progress: `data/logs/chain.log`, `stage2.log/.err`. If stage 1 dies, stage 2 is NOT started
-  (chain.log says so); to continue from a checkpoint use `--resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-<N>`.
-  The resume path was smoke-tested (1 step from the dry-run adapter, 5.1 GB peak). Evals (zero_shot.py --adapter ...
-  --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 50) are to run after both stages, one per checkpoint of interest.
+### Final results (held-out pairs, first 20 per hop of the 50-per-hop pool, 80 games/model, R1 base, `--lenient --temperature 0.6 --max-new-tokens 1024`)
+| model | W&B run | overall | h1 | h2 | h3 | h4 | invalid | unparseable |
+|---|---|---|---|---|---|---|---|---|
+| untrained R1 (baseline) | `en686sia` | 13.8% | 50% | 5% | 0% | 0% | 73% | 68% |
+| stage 1b final (cap 1024) | `zw66dml9` | 26.3% | 80% | 25% | 0% | 0% | 52% | 35% |
+| stage 2 step 100 | `q98p2apa` | 33.8% | 85% | 45% | 5% | 0% | 38% | 11% |
+| **stage 2 final (cap 512)** | `a7ldzv08` | **35.0%** | 80% | 40% | 20% | 0% | 37% | 5% |
+- Training roughly 2.5x'd success and removed most unparseable output; stage 2 (shorter cap) beat stage 1b. Remaining invalid actions are mostly
+  `unknown_title` (~13%, hallucinated page names), `target_not_linked` (6%), `revisit` (6%). No model solves any hop-4 game.
+- **Caveats:** n=20/hop = wide CIs (one game = 1.25 points overall). The Mac's Qwen2.5-1.5B zero-shot (lenient, n=50/hop, greedy) scored 38%, so the
+  trained R1 is on par, not clearly better; the settings differ (model, n, decoding), so do not over-read it. Per-step training success (47%) is
+  far above full-game success (35%) because 57% of training states are one move from the target: train on harder states (`--hops/--mix`) next.
+- Eval local copies: `data/runs/*.jsonl` (episodes + raw text), logs `data/logs/eval-*.log`; one eval took 0.7-1.7 h on the RTX.
 
-- **Status 2026-11-08 17:30 IST:** stage 1b FINISHED cleanly (275/275 in 8h51m wall; final adapter + checkpoints 25..275 in
-  `data/ckpt/grpo-step-r1-stage1b`). Last 35 steps: invalid 36%, cutoff 12%, closer 29%, per-step success 23%, reward -0.34.
-  Stage 2 auto-started 15:08 (pid 7948) and is at step 143/300, ~40-56 s/step (512 cap is much faster; ETA ~2.5 h). Last 40 logged
-  steps: invalid 20%, cutoff 1%, closer 53%, per-step success 47%, reward +0.55, mean length 179 tokens, peak VRAM 9.0 GB. No
-  errors. Stage 2 checkpoints so far 25..125 in `data/ckpt/grpo-step-r1-stage2`. Evals not started (user: only after training).
+### What was run (all with the defaults in the GRPO section: G=8, 4 prompts/step, lr 1e-5, LoRA r16, beta 0)
+- Dry run (5 steps): ~85-105 s/step, peak VRAM 8.6 GB. Untrained R1 rambles to the token cap with no `<answer>` (invalid 94-97%), so the
+  reward code was right and early learning is "finish and emit the tag".
+- **Stage 1**: first attempt killed at step 32 (W&B `ceebhgej`; its `checkpoint-25` is the restart point), then **stage "1b"**: `--stage 1b --max-steps 275
+  --seed 2 --resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-25 --out data/ckpt/grpo-step-r1-stage1b` (W&B `kkqk572s`, 8h51m wall, ~85 s/step).
+  Effective stage 1 = checkpoint-25 + stage 1b; optimizer state was not carried over (resume restores adapter weights only). Invalid rate
+  96% -> 36%, cutoff 53% -> 12%, per-step success 2% -> 23%, completion length 838 -> ~520 tokens.
+- **Stage 2**: `--stage 2 --max-completion 512 --max-steps 300 --seed 1 --resume-adapter data/ckpt/grpo-step-r1-stage1b --out data/ckpt/grpo-step-r1-stage2`
+  (W&B `sa7pbhpc`, 4h35m, ~40-55 s/step). `--seed` differs per stage on purpose: the same seed re-samples the same states. End state: invalid 20%,
+  cutoff 1%, per-step success 47%, ~179 tokens/completion, peak VRAM 9.0 GB.
+- Checkpoints every 25 steps (adapters in `data/ckpt/<out>/checkpoint-<N>`); final adapters in the run dirs. `--save-total-limit` default 0 keeps all.
+- W&B housekeeping (user-approved): deleted the crashed `k8mnksk6` and the 3-step aborted `pm3m0btf`; kept `ceebhgej` (steps 1-32, the only record of the
+  slowdown) and left the Mac's early duplicates `henp9oon`, `pumln526`. A `handoff` run per phase also lives in the project.
+
+### Windows / RTX lessons (read before running anything on this box)
+- **WDDM VRAM spill = 4x slowdown (cost ~3 h).** A second GPU job during training made PyTorch's CUDA cache balloon to 15 GB dedicated + 4 GB spilled
+  into shared system RAM (`Get-Counter '\GPU Process Memory(*)\Shared Usage'`) although `sys/cuda_peak_gb` stayed ~8.8; steps went 85 s -> 380-480 s with the GPU
+  "99% busy" but only ~87 W of 300 W, no throttling, no recovery. **Never run a second GPU job while training or evaluating.** Fix: `grpo_train.py
+  --gpu-mem-fraction` (default 0.75). `PYTORCH_CUDA_ALLOC_CONF=...max_split_size_mb` did NOT help.
+- **Always set `PYTHONUTF8=1 PYTHONIOENCODING=utf-8`** for training: TRL's `log_completions` prints sampled text and crashed the first launch with
+  `UnicodeEncodeError` (cp1252). In ad-hoc scripts use `python -I -X utf8` (`-I` ignores `PYTHONUTF8`).
+- **The PC can sleep**: it slept 20:11-20:43 on 2026-11-08 (something called `SetSuspendState`, although sleep/hibernate timers are "never" on AC). The eval froze and
+  resumed intact, but wall-clock timings (e.g. s/call) jump. Check System log Kernel-Power events 42/107 when progress stalls; ask the user not to sleep the PC during long jobs.
+- Long jobs run detached via PowerShell `Start-Process` (no tool timeout can kill them) with logs in `data/logs/`; unattended chains live in gitignored
+  `data/run_stage2_after_stage1b.ps1` and `data/run_evals_after_stage2.ps1`. Stage 2 and the evals started themselves only if the previous step left its final adapter.
+- torch: uv resolved a CPU-only wheel on Windows, so `pyproject.toml` pins the `pytorch-cu132` index for win32/linux only (Blackwell sm_120 needs CUDA >= 12.8);
+  macOS keeps the PyPI wheel (MPS). `uv.lock` changed: `uv sync` on the Mac. No vLLM on Windows (plain HF generation). `tests/test_app_*.py` need `--group app`.
+- **`--model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` is required for adapter evals** (`zero_shot.py` defaults to Qwen2.5-1.5B).
+- Observation, not set up by the agent: an `sshd` (OpenSSH Server) service is running on this PC (Automatic). The handoff does not use it; the user may disable it.
+- `data/wikispeedia.json` was copied in by the user (rebuilding needs the raw SNAP files, not on this box).
 
 ## HANDOFF: CUDA machine -> dev machine (dev agent: poll `git pull` and grep for the `STATUS_` lines below)
 STATUS_TRAINING: READY_FOR_TRANSFER  (2026-11-08 21:15 IST; artifact `aiwizards/wiki-game/wikigame-handoff-training:v0`, 56 files, 1833 MB)
@@ -186,7 +172,7 @@ STATUS_EVAL: PENDING  (evals are still running on the CUDA box; this line flips 
 
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
-- R1 baseline at 50/hop (ask the user; ~25 s/call on Mac, much faster on CUDA).
+- R1 baseline and trained-model evals at 50/hop (done only at 20/hop so far, to save time); harder training states (hops 3-4) and on-policy rounds are the next levers.
 - Simple English Wikipedia dump loader (bigger graph), TF-IDF/embedding baselines, trajectory-only reward ablation
   (separate W&B group), verifying the paper's table numbers (reference page figures came from a summary, not the PDF).
 - Optional cleanup the user may want: duplicate early W&B runs `henp9oon`, `pumln526` (no episode tables); never delete
