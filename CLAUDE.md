@@ -154,27 +154,35 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   steps: invalid 20%, cutoff 1%, closer 53%, per-step success 47%, reward +0.55, mean length 179 tokens, peak VRAM 9.0 GB. No
   errors. Stage 2 checkpoints so far 25..125 in `data/ckpt/grpo-step-r1-stage2`. Evals not started (user: only after training).
 
-## HANDOFF: CUDA machine -> dev machine (dev agent: poll `git pull` and grep for the STATUS line below)
-STATUS: PENDING  (training + evals still running on the CUDA box; the CUDA agent flips this to `READY_FOR_TRANSFER` and pushes)
-- Transport (user's decision 2026-11-08): a **W&B artifact** `aiwizards/wiki-game/wikigame-handoff`, NOT scp. Nothing is exposed
-  on the Windows PC. File names inside the artifact are repo-relative, so downloading with `--root .` restores them in place.
-- What ships (~350 MB; `uv run python scripts/publish_handoff.py --dry-run` lists it): final adapters of `grpo-step-r1-stage1b` and
-  `grpo-step-r1-stage2` (+ their `wikigame_config.json`), adapter-only checkpoints 100/200 of each, `data/runs/*.jsonl` (eval
-  episodes with raw model text) and the small `data/logs/*.log`. NOT shipped: optimizer states, `data/hf` (the Mac downloads the
-  base model itself), stage logs > 20 MB (the same metrics are in W&B runs `kkqk572s` stage 1b and `sa7pbhpc` stage 2).
-- When `STATUS: READY_FOR_TRANSFER` appears (the line will also give the artifact version and number of files):
+## HANDOFF: CUDA machine -> dev machine (dev agent: poll `git pull` and grep for the `STATUS_` lines below)
+STATUS_TRAINING: READY_FOR_TRANSFER  (2026-11-08 21:15 IST; artifact `aiwizards/wiki-game/wikigame-handoff-training:v0`, 56 files, 1833 MB)
+STATUS_EVAL: PENDING  (evals are still running on the CUDA box; this line flips to READY_FOR_TRANSFER later, with its own artifact + manifest)
+- **CHANGE (user, 2026-11-08 ~21:00): the handoff is now in two phases.** The training outputs are final and are ready NOW, so take
+  them without waiting for the evals (which need several more hours). The eval data follows in phase 2.
+- Transport: W&B artifacts, NOT scp (nothing is exposed on the Windows PC). File names inside an artifact are repo-relative, so
+  downloading with `--root .` restores them in place. Each phase has its own manifest in git for integrity checking.
+- **Phase 1 (training, ready):** every checkpoint's adapter files (`adapter_model.safetensors` + `adapter_config.json`, ~70 MB each,
+  NO optimizer state) of `data/ckpt/grpo-step-r1-stage1b` (25..275), `data/ckpt/grpo-step-r1-stage2` (25..300), and
+  `data/ckpt/grpo-step-r1-stage1/checkpoint-25` (the point stage 1b resumed from, so effective stage 1 = that + stage1b); the final adapter
+  + `wikigame_config.json` of stage1b and stage2 (the root-level adapters equal checkpoint-275 / checkpoint-300); small logs in
+  `data/logs`. **Model to test = `data/ckpt/grpo-step-r1-stage2`** (final). NOT shipped: optimizer states, `data/hf` (the Mac downloads
+  the base model itself), stage logs > 20 MB (same metrics in W&B runs `kkqk572s` stage 1b and `sa7pbhpc` stage 2).
+- Dev-agent steps for phase 1:
   1. `git pull`; `uv sync --group llm --group dev`.
-  2. `uv run wandb artifact get aiwizards/wiki-game/wikigame-handoff:latest --root .`
-  3. `uv run python scripts/publish_handoff.py --verify .`  must print `all N files verified OK` (checks size + sha256 against
-     `handoff/MANIFEST.txt`, which arrives through git). If it reports a problem, re-download; do not use the files.
-  4. Smoke test the model on the Mac (MPS, ~25 s/call, so keep it tiny):
+  2. `uv run wandb artifact get aiwizards/wiki-game/wikigame-handoff-training:latest --root .`
+  3. `uv run python scripts/publish_handoff.py --phase training --verify .`  must print `all 56 files verified OK` (size + sha256 vs
+     `handoff/MANIFEST-training.txt`, which arrives through git). If it reports a problem, re-download; do not use the files.
+  4. Smoke test on the Mac (MPS, ~25 s/call, so keep it tiny):
      `HF_HOME=data/hf uv run python scripts/zero_shot.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --adapter data/ckpt/grpo-step-r1-stage2 --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 3 --no-wandb --name mac-smoke`
-- **`--model` is required for adapter evals.** `zero_shot.py`'s default model is Qwen2.5-1.5B, so the older command in the GRPO
-  section (no `--model`) would apply an R1 LoRA to the wrong base model. Always pass the R1 id.
-- CUDA-side evals (queued, unattended, `data/run_evals_after_stage2.ps1`, log `data/logs/evalchain.log`): 20 pairs/hop (the first 20
-  of the shared 50-per-hop held-out pool, hops 1-4, so 80 games each), R1 base, `--lenient --temperature 0.6 --max-new-tokens 1024`:
-  `grpo-step-r1-stage2-final`, `grpo-step-r1-stage1b-final`, `zeroshot-r1-1.5b-lenient` (untrained R1 baseline), `grpo-step-r1-stage2-step100`.
-  Results appear as W&B runs (job_type `eval` / `baseline`) and on the Streamlit Baselines page. n=20/hop is small: expect wide CIs.
+- **`--model` is required for adapter evals.** `zero_shot.py`'s default model is Qwen2.5-1.5B, so an R1 LoRA would be applied to the
+  wrong base model without it. Always pass the R1 id.
+- **Phase 2 (eval, pending):** `data/runs/*.jsonl` (full eval episodes with raw model text) + eval logs, via artifact
+  `wikigame-handoff-eval` and `handoff/MANIFEST-eval.txt`; same steps with `--phase eval`. Wait for `STATUS_EVAL: READY_FOR_TRANSFER`.
+  The CUDA-side evals (unattended chain `data/run_evals_after_stage2.ps1`, log `data/logs/evalchain.log`) use 20 pairs/hop (the first 20 of
+  the shared 50-per-hop held-out pool, hops 1-4, so 80 games each), R1 base, `--lenient --temperature 0.6 --max-new-tokens 1024`:
+  `grpo-step-r1-stage2-final`, `grpo-step-r1-stage1b-final`, `zeroshot-r1-1.5b-lenient` (untrained R1 baseline),
+  `grpo-step-r1-stage2-step100`. Results also appear as W&B runs (job_type `eval` / `baseline`) as each finishes. n=20/hop is small: wide CIs.
+- Please avoid heavy GPU use on the CUDA box while its evals run; the dev machine is unaffected by any of this.
 
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
