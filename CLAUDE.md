@@ -129,7 +129,15 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   **stage "1b"**: `--stage 1b --max-steps 275 --seed 2 --resume-adapter data/ckpt/grpo-step-r1-stage1/checkpoint-25
   --out data/ckpt/grpo-step-r1-stage1b` (275 = 300 minus the 25 already done; seed 2 = fresh states), launcher pid 7780,
   logs `data/logs/stage1b.log/.err`. So effective stage 1 = checkpoint-25 of `stage1` + 275 steps of `stage1b`; optimizer state
-  was not carried over (resume restores adapter weights only). Several aborted W&B runs sit in the project; don't delete without asking.
+  was not carried over (resume restores adapter weights only). **W&B cleanup (user-approved 2026-11-08):** deleted the crashed run
+  `k8mnksk6` and the 3-step aborted relaunch `pm3m0btf`. Kept: `ceebhgej` (first stage-1 run, steps 1-32; source of checkpoint-25
+  and the only record of the slowdown; shows state "running" because it was killed, not finished) and the LIVE stage-1b run
+  `kkqk572s` (`...stage1b-cuda-02e16d3+dirty`, "+dirty" only because grpo_train.py was uncommitted at launch). Also left alone:
+  the Mac's early duplicates `henp9oon`, `pumln526`.
+- **Learning curve of stage 1b (20-step means, 2026-11-08 at step 162/275):** invalid rate 96% -> 80% (steps 61-80) -> 50% (101-120)
+  -> 35% (141-162); cutoff 53% -> 13-16%; closer-move rate 2% -> 31%; per-step success 2% -> 22-30%; mean reward -2.04 -> -0.2;
+  completion length 838 -> ~570 tokens. Step time steady ~85 s (wall ~106 s/step incl. checkpoint/W&B overhead).
+  So the slow start was just that: the lr 1e-5 / LoRA r16 defaults do learn, no hyperparameter change needed so far.
 - **Stage 2 is chained to start automatically (user approved 2026-11-08; evals only AFTER training).** Watcher
   `data/run_stage2_after_stage1b.ps1` (gitignored, powershell pid 21032) waits for the stage-1b launcher (pid 7780), and only if
   `data/ckpt/grpo-step-r1-stage1b/{wikigame_config.json,adapter_model.safetensors}` exist it runs stage 2:
