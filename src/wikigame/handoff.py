@@ -11,9 +11,10 @@ import hashlib
 from pathlib import Path
 
 ADAPTER_FILES = ("adapter_model.safetensors", "adapter_config.json")
-RUN_DIRS = ("grpo-step-r1-stage1b", "grpo-step-r1-stage2")  # under data/ckpt
+PHASES = ("training", "eval")  # shipped separately: training outputs are final early, evals take hours
+RUN_DIRS = ("grpo-step-r1-stage1b", "grpo-step-r1-stage2")  # finished runs under data/ckpt (final adapter + config)
+LINEAGE_DIRS = ("grpo-step-r1-stage1",)  # killed first run: only its checkpoint-25 matters (stage 1b resumed from it)
 FINAL_EXTRA = ("wikigame_config.json",)  # training config, written next to a finished run's adapter
-KEEP_CHECKPOINTS = {"grpo-step-r1-stage1b": (100, 200), "grpo-step-r1-stage2": (100, 200)}
 MAX_LOG_BYTES = 20 * 2**20
 
 
@@ -62,24 +63,38 @@ def verify(entries: list[Entry], root: Path) -> list[str]:
     return problems
 
 
-def default_files(root: Path) -> tuple[list[Path], list[str]]:
-    """What to ship: final adapters (+ training config), a few intermediate adapters (adapter files only, no optimizer
-    state), eval episode JSONL, and the training/eval logs. Returns (existing files, warnings for missing ones)."""
+def _small_logs(root: Path, patterns: tuple[str, ...], files: list[Path], warnings: list[str]) -> None:
+    for pat in patterns:
+        for log in sorted((root / "data" / "logs").glob(pat)):
+            if log.stat().st_size <= MAX_LOG_BYTES:
+                files.append(log)
+            else:
+                warnings.append(f"skipped (> {MAX_LOG_BYTES // 2**20} MB): {log.relative_to(root).as_posix()}")
+
+
+def default_files(root: Path, phase: str = "training") -> tuple[list[Path], list[str]]:
+    """What to ship in each phase. Returns (existing files, warnings for missing/skipped ones).
+
+    training: every checkpoint's adapter files (no optimizer state) + the final adapter and training config of each
+              finished run, and the small training logs. All of it is immutable once training has finished.
+    eval:     eval episode JSONL (data/runs) and the eval logs. Send only after the eval chain has finished."""
+    if phase not in PHASES:
+        raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
     ckpt, files, warnings = root / "data" / "ckpt", [], []
 
     def add(p: Path) -> None:
         (files.append(p) if p.is_file() else warnings.append(f"missing: {p.relative_to(root).as_posix()}"))
 
-    for run in RUN_DIRS:
-        for name in ADAPTER_FILES + FINAL_EXTRA:
-            add(ckpt / run / name)
-        for step in KEEP_CHECKPOINTS.get(run, ()):
-            for name in ADAPTER_FILES:
-                add(ckpt / run / f"checkpoint-{step}" / name)
-    files += sorted((root / "data" / "runs").glob("*.jsonl"))
-    for log in sorted((root / "data" / "logs").glob("*.log")):
-        if log.stat().st_size <= MAX_LOG_BYTES:
-            files.append(log)
-        else:
-            warnings.append(f"skipped (> {MAX_LOG_BYTES // 2**20} MB): {log.relative_to(root).as_posix()}")
+    if phase == "training":
+        for run in RUN_DIRS + LINEAGE_DIRS:
+            if run in RUN_DIRS:
+                for name in ADAPTER_FILES + FINAL_EXTRA:
+                    add(ckpt / run / name)
+            for cp in sorted((ckpt / run).glob("checkpoint-*")):
+                for name in ADAPTER_FILES:
+                    add(cp / name)
+        _small_logs(root, ("chain.log", "stage*.log"), files, warnings)
+    else:
+        files += sorted((root / "data" / "runs").glob("*.jsonl"))
+        _small_logs(root, ("eval*.log",), files, warnings)
     return files, warnings
