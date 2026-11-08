@@ -84,7 +84,7 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   `env/cutoff_rate`, `env/invalid/<cause>`, `rewards/env_step_reward/mean`, `frac_reward_zero_std` (groups with no
   learning signal), `completions/clipped_ratio`.
 - Evaluate a checkpoint on the shared held-out pairs (job_type `eval`, appears on the Baselines page):
-  `uv run python scripts/zero_shot.py --adapter data/ckpt/<exp> --name <exp> --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 50`
+  `uv run python scripts/zero_shot.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --adapter data/ckpt/<exp> --name <exp> --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 50`
 - Checked only on the Mac with Qwen 0.5B/1.5B (fp32, MPS): loop runs, gradients flow, W&B (offline) gets env/* metrics
   and completion tables, adapter reloads for eval. **R1 has never been trained; GPU memory/speed are unmeasured.**
   Plain HF generation of ~700 tokens x 32 sequences per step will be slow (vLLM colocate mode is the upgrade path).
@@ -153,6 +153,28 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   Stage 2 auto-started 15:08 (pid 7948) and is at step 143/300, ~40-56 s/step (512 cap is much faster; ETA ~2.5 h). Last 40 logged
   steps: invalid 20%, cutoff 1%, closer 53%, per-step success 47%, reward +0.55, mean length 179 tokens, peak VRAM 9.0 GB. No
   errors. Stage 2 checkpoints so far 25..125 in `data/ckpt/grpo-step-r1-stage2`. Evals not started (user: only after training).
+
+## HANDOFF: CUDA machine -> dev machine (dev agent: poll `git pull` and grep for the STATUS line below)
+STATUS: PENDING  (training + evals still running on the CUDA box; the CUDA agent flips this to `READY_FOR_TRANSFER` and pushes)
+- Transport (user's decision 2026-11-08): a **W&B artifact** `aiwizards/wiki-game/wikigame-handoff`, NOT scp. Nothing is exposed
+  on the Windows PC. File names inside the artifact are repo-relative, so downloading with `--root .` restores them in place.
+- What ships (~350 MB; `uv run python scripts/publish_handoff.py --dry-run` lists it): final adapters of `grpo-step-r1-stage1b` and
+  `grpo-step-r1-stage2` (+ their `wikigame_config.json`), adapter-only checkpoints 100/200 of each, `data/runs/*.jsonl` (eval
+  episodes with raw model text) and the small `data/logs/*.log`. NOT shipped: optimizer states, `data/hf` (the Mac downloads the
+  base model itself), stage logs > 20 MB (the same metrics are in W&B runs `kkqk572s` stage 1b and `sa7pbhpc` stage 2).
+- When `STATUS: READY_FOR_TRANSFER` appears (the line will also give the artifact version and number of files):
+  1. `git pull`; `uv sync --group llm --group dev`.
+  2. `uv run wandb artifact get aiwizards/wiki-game/wikigame-handoff:latest --root .`
+  3. `uv run python scripts/publish_handoff.py --verify .`  must print `all N files verified OK` (checks size + sha256 against
+     `handoff/MANIFEST.txt`, which arrives through git). If it reports a problem, re-download; do not use the files.
+  4. Smoke test the model on the Mac (MPS, ~25 s/call, so keep it tiny):
+     `HF_HOME=data/hf uv run python scripts/zero_shot.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --adapter data/ckpt/grpo-step-r1-stage2 --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 3 --no-wandb --name mac-smoke`
+- **`--model` is required for adapter evals.** `zero_shot.py`'s default model is Qwen2.5-1.5B, so the older command in the GRPO
+  section (no `--model`) would apply an R1 LoRA to the wrong base model. Always pass the R1 id.
+- CUDA-side evals (queued, unattended, `data/run_evals_after_stage2.ps1`, log `data/logs/evalchain.log`): 20 pairs/hop (the first 20
+  of the shared 50-per-hop held-out pool, hops 1-4, so 80 games each), R1 base, `--lenient --temperature 0.6 --max-new-tokens 1024`:
+  `grpo-step-r1-stage2-final`, `grpo-step-r1-stage1b-final`, `zeroshot-r1-1.5b-lenient` (untrained R1 baseline), `grpo-step-r1-stage2-step100`.
+  Results appear as W&B runs (job_type `eval` / `baseline`) and on the Streamlit Baselines page. n=20/hop is small: expect wide CIs.
 
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.

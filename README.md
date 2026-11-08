@@ -40,5 +40,5 @@ HF_HOME=data/hf uv run python scripts/grpo_train.py --model Qwen/Qwen2.5-0.5B-In
 uv run python scripts/grpo_train.py --stage 1 --max-completion 1024
 uv run python scripts/grpo_train.py --stage 2 --max-completion 512 --resume-adapter data/ckpt/grpo-step-r1-stage1
 # evaluate a checkpoint on the same held-out pairs as every baseline
-uv run python scripts/zero_shot.py --adapter data/ckpt/grpo-step-r1-stage1 --name grpo-step-r1-stage1 --lenient --temperature 0.6 --n-per-hop 50 --max-new-tokens 1024
+uv run python scripts/zero_shot.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --adapter data/ckpt/grpo-step-r1-stage1 --name grpo-step-r1-stage1 --lenient --temperature 0.6 --n-per-hop 50 --max-new-tokens 1024
 ```
