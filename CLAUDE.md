@@ -142,9 +142,9 @@ Training and evals are FINISHED; results below. Hook and `detect_machine()` acce
 
 ## HANDOFF: CUDA machine -> dev machine (dev agent: poll `git pull` and grep for the `STATUS_` lines below)
 STATUS_TRAINING: READY_FOR_TRANSFER  (2026-11-08 21:15 IST; artifact `aiwizards/wiki-game/wikigame-handoff-training:v0`, 56 files, 1833 MB)
-STATUS_EVAL: PENDING  (evals are still running on the CUDA box; this line flips to READY_FOR_TRANSFER later, with its own artifact + manifest)
-- **CHANGE (user, 2026-11-08 ~21:00): the handoff is now in two phases.** The training outputs are final and are ready NOW, so take
-  them without waiting for the evals (which need several more hours). The eval data follows in phase 2.
+STATUS_EVAL: READY_FOR_TRANSFER  (2026-11-09 02:35 IST; artifact `aiwizards/wiki-game/wikigame-handoff-eval:v0`, 9 files, 4 MB)
+- **BOTH PHASES ARE NOW READY.** (The user split the handoff in two on 2026-11-08 so training outputs could move before the evals finished;
+  the evals have since finished and phase 2 is published.) Do phase 1, then phase 2.
 - Transport: W&B artifacts, NOT scp (nothing is exposed on the Windows PC). File names inside an artifact are repo-relative, so
   downloading with `--root .` restores them in place. Each phase has its own manifest in git for integrity checking.
 - **Phase 1 (training, ready):** every checkpoint's adapter files (`adapter_model.safetensors` + `adapter_config.json`, ~70 MB each,
@@ -162,13 +162,13 @@ STATUS_EVAL: PENDING  (evals are still running on the CUDA box; this line flips 
      `HF_HOME=data/hf uv run python scripts/zero_shot.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --adapter data/ckpt/grpo-step-r1-stage2 --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 3 --no-wandb --name mac-smoke`
 - **`--model` is required for adapter evals.** `zero_shot.py`'s default model is Qwen2.5-1.5B, so an R1 LoRA would be applied to the
   wrong base model without it. Always pass the R1 id.
-- **Phase 2 (eval, pending):** `data/runs/*.jsonl` (full eval episodes with raw model text) + eval logs, via artifact
-  `wikigame-handoff-eval` and `handoff/MANIFEST-eval.txt`; same steps with `--phase eval`. Wait for `STATUS_EVAL: READY_FOR_TRANSFER`.
-  The CUDA-side evals (unattended chain `data/run_evals_after_stage2.ps1`, log `data/logs/evalchain.log`) use 20 pairs/hop (the first 20 of
-  the shared 50-per-hop held-out pool, hops 1-4, so 80 games each), R1 base, `--lenient --temperature 0.6 --max-new-tokens 1024`:
-  `grpo-step-r1-stage2-final`, `grpo-step-r1-stage1b-final`, `zeroshot-r1-1.5b-lenient` (untrained R1 baseline),
-  `grpo-step-r1-stage2-step100`. Results also appear as W&B runs (job_type `eval` / `baseline`) as each finishes. n=20/hop is small: wide CIs.
-- Please avoid heavy GPU use on the CUDA box while its evals run; the dev machine is unaffected by any of this.
+- **Phase 2 (eval, ready):** 4 eval episode files `data/runs/*.jsonl` (80 games each, full paths + raw model text) and the eval logs
+  `data/logs/eval*.log`; artifact `wikigame-handoff-eval`, manifest `handoff/MANIFEST-eval.txt`. Steps:
+  1. `uv run wandb artifact get aiwizards/wiki-game/wikigame-handoff-eval:latest --root .`
+  2. `uv run python scripts/publish_handoff.py --phase eval --verify .`  must print `all 9 files verified OK`.
+  3. The results table is in "CUDA box: state of play"; the same runs are in W&B (job_type `eval` / `baseline`: `a7ldzv08` stage 2 final, `zw66dml9` stage 1b final,
+     `en686sia` untrained R1, `q98p2apa` stage 2 step 100) and can be loaded into the Streamlit app (Runs / Episodes / Baselines pages).
+- The CUDA box is idle now (no jobs running); nothing further is queued.
 
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.

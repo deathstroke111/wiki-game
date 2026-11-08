@@ -1,0 +1,10 @@
+# eval phase. sha256<TAB>bytes<TAB>repo-relative path; see src/wikigame/handoff.py
+7b32113f65a86143af1066d948562f1b9fd674898349a04380bf6906a8f000fb	9063	data/logs/eval-grpo-step-r1-stage1b-final.log
+93a15fef800e35c53c654efb3068f9ab77bba7f4e630ffc22864b1073fa90b28	8954	data/logs/eval-grpo-step-r1-stage2-final.log
+a57ed288c8bdf3c0fbe3eb5fcf21fdf8b95bf0dd2026284f272f88067ceaf509	8976	data/logs/eval-grpo-step-r1-stage2-step100.log
+7a8b878f1ebffbd8f709c2390290d84e95d58ae493bccb1cdd53fce89b4c070c	9109	data/logs/eval-zeroshot-r1-1.5b-lenient.log
+1af754eddee54b8197d3f34a549905466000d1a8997b73a687aae9da20d79063	641	data/logs/evalchain.log
+45a138e2ce59b51b1c75970f4c738cb0b4581179669f44367cab124f74a64cd2	1183979	data/runs/grpo-step-r1-stage1b-final-cuda-1794152860.jsonl
+37294d5770a794bf0d34beaf4dfbe2213c533146d0b50b42fb59484536c88826	705108	data/runs/grpo-step-r1-stage2-final-cuda-1794147288.jsonl
+839b26aeab3469e793d7f790e2edeca2855722973e103c7b16552851ef544f46	910615	data/runs/grpo-step-r1-stage2-step100-cuda-1794165255.jsonl
+c18955e59bb8e16673b0bb99aa1c14f16ff9fa4835c8a823100cf0a0b7334ea7	1191136	data/runs/zeroshot-r1-1.5b-lenient-cuda-1794159041.jsonl
