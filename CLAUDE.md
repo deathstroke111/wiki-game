@@ -148,6 +148,12 @@ restored in stored output; sampling T=0.6 is recommended (greedy loops). Probe o
   The resume path was smoke-tested (1 step from the dry-run adapter, 5.1 GB peak). Evals (zero_shot.py --adapter ...
   --lenient --temperature 0.6 --max-new-tokens 1024 --n-per-hop 50) are to run after both stages, one per checkpoint of interest.
 
+- **Status 2026-11-08 17:30 IST:** stage 1b FINISHED cleanly (275/275 in 8h51m wall; final adapter + checkpoints 25..275 in
+  `data/ckpt/grpo-step-r1-stage1b`). Last 35 steps: invalid 36%, cutoff 12%, closer 29%, per-step success 23%, reward -0.34.
+  Stage 2 auto-started 15:08 (pid 7948) and is at step 143/300, ~40-56 s/step (512 cap is much faster; ETA ~2.5 h). Last 40 logged
+  steps: invalid 20%, cutoff 1%, closer 53%, per-step success 47%, reward +0.55, mean length 179 tokens, peak VRAM 9.0 GB. No
+  errors. Stage 2 checkpoints so far 25..125 in `data/ckpt/grpo-step-r1-stage2`. Evals not started (user: only after training).
+
 ## Open items / ideas not done
 - On-policy state rounds (retrain in rounds with states from the model's own rollouts); only the noisy-walk stand-in exists.
 - R1 baseline at 50/hop (ask the user; ~25 s/call on Mac, much faster on CUDA).
