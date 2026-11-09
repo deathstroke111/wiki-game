@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "adr-skill": {
+      "source": "skillrecordings/adr-skill",
+      "sourceType": "github",
+      "skillPath": "skills/adr-skill/SKILL.md",
+      "computedHash": "c6a786cb3c69478135098561e60c193953fd473d08f8e4c03dbb48b90f5c73aa"
+    }
+  }
+}
