@@ -40,6 +40,15 @@ def detect_machine() -> str:
     return "local"
 
 
+def detect_provider() -> str | None:
+    """Where the machine is rented from: 'runpod' inside a Runpod pod (it sets RUNPOD_POD_ID), else None.
+    Override with WIKIGAME_PROVIDER (empty string = none)."""
+    forced = os.environ.get("WIKIGAME_PROVIDER")
+    if forced is not None:
+        return forced or None
+    return "runpod" if os.environ.get("RUNPOD_POD_ID") else None
+
+
 def git_sha() -> str:
     try:
         sha = subprocess.run(
@@ -66,6 +75,10 @@ def init_run(
     sha = git_sha()
     cfg = {**config, "machine": machine, "git_sha": sha, "experiment": experiment}
     all_tags = [f"machine:{machine}", *(tags or [])]
+    provider = detect_provider()
+    if provider:
+        cfg["provider"] = provider
+        all_tags.append(f"provider:{provider}")
     if graph is not None:
         cfg.update(graph_nodes=len(graph), graph_edges=sum(map(len, graph.adj)))
     if graph_name:

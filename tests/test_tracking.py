@@ -20,6 +20,16 @@ def test_detect_machine_override(monkeypatch):
         tracking.detect_machine()
 
 
+def test_detect_provider(monkeypatch):
+    monkeypatch.delenv("WIKIGAME_PROVIDER", raising=False)
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    assert tracking.detect_provider() is None
+    monkeypatch.setenv("RUNPOD_POD_ID", "abc123")
+    assert tracking.detect_provider() == "runpod"
+    monkeypatch.setenv("WIKIGAME_PROVIDER", "")
+    assert tracking.detect_provider() is None
+
+
 def test_run_identity_and_logging_offline(monkeypatch, tmp_path, graph):
     monkeypatch.setenv("WANDB_MODE", "offline")
     monkeypatch.setenv("WANDB_DIR", str(tmp_path))
