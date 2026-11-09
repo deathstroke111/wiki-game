@@ -12,3 +12,6 @@ wheels/
 /data/
 wandb/
 .env
+
+# Agent working notes: local only, not tracked (state lives with the user and the rented pod)
+CLAUDE.md
