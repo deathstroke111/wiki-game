@@ -109,6 +109,27 @@ def test_baselines_page_renders_and_filters():
     assert not at.exception, at.exception
 
 
+# ---- statistics page ----------------------------------------------------------------------------------
+def test_statistics_page_sections_render():
+    at = run("statistics.py")
+    assert not at.exception, at.exception
+    assert at.title[0].value.endswith("Statistics")
+    assert any("Compare any two" in s.value for s in at.subheader)
+    at.button_group[0].set_value("Failure anatomy").run()
+    assert not at.exception, at.exception
+    assert any("What the agent does" in s.value for s in at.subheader)
+    at.button_group[0].set_value("Training process").run()
+    assert not at.exception, at.exception
+    assert any("No training runs" in i.value for i in at.info)
+
+
+def test_statistics_page_with_no_agents_picked():
+    at = run("statistics.py")
+    at.sidebar.multiselect[0].set_value([]).run()
+    assert not at.exception, at.exception
+    assert any("Pick at least one" in i.value for i in at.info)
+
+
 # ---- invalid-cause views ------------------------------------------------------------------------------
 @pytest.fixture
 def source_with_invalids(monkeypatch):
