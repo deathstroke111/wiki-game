@@ -120,6 +120,24 @@ def test_state_pool_falls_back_to_scripted_when_a_round_runs_out():
     assert [pool[i]["kind"] for i in range(5)] == ["onpolicy"] * 2 + ["scripted"] * 3
 
 
+def test_state_pool_rows_share_the_scripted_columns(graph):
+    # regression (first pod run): play_games rows carry an extra "game" key; TRL indexes every row of a batch with
+    # the first row's keys, so a mixed batch raised KeyError: 'game' in _calculate_rewards
+    from wikigame.states import sample_states
+
+    scripted = sample_states(graph, 6, R1, seed=0)
+    _, rows = play_games(graph, oracle_stub(graph), GAMES, messages_fn=lambda o: training_messages(o, R1, None))
+    assert "game" in rows[0]
+    pool = StatePool(scripted, share=0.5, seed=0)
+    pool.refill(select_states(graph, rows))
+    batch = [pool[i] for i in range(len(scripted))]
+    kinds = {r["kind"] for r in batch}
+    assert "onpolicy" in kinds and kinds - {"onpolicy"}  # a mixed batch
+    assert all(set(r) == set(scripted[0]) for r in batch)
+    with pytest.raises(KeyError):
+        pool.refill([{"kind": "onpolicy"}])  # a missing column fails at refill, not mid-step
+
+
 def test_round_pairs_avoid_heldout_pairs(graph):
     import random
 

@@ -33,6 +33,9 @@ class StatePool:
         if not scripted:
             raise ValueError("StatePool needs at least one scripted row")
         self.scripted, self.share = scripted, share
+        # TRL builds the reward kwargs from the first row's keys and indexes every row with them, so all rows must
+        # share one column set: on-policy rows are cut down to the scripted columns (play_games adds e.g. "game")
+        self.columns = tuple(scripted[0])
         self.rng = random.Random(seed)
         self.fresh: list[dict] = []
         self.assigned: dict[int, dict] = {}
@@ -58,7 +61,7 @@ class StatePool:
         n = sum(self.drawn.values())
         stats = {"onpolicy/drawn_share": self.drawn["onpolicy"] / n if n else 0.0,
                  "onpolicy/unused_from_last_round": len(self.fresh)}
-        self.fresh = list(rows)
+        self.fresh = [{k: r[k] for k in self.columns} for r in rows]  # KeyError here if a column is missing
         self.rng.shuffle(self.fresh)
         self.drawn.clear()
         return stats
