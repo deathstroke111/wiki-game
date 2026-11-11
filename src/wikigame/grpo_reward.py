@@ -36,7 +36,9 @@ class StepReward:
     def score(self, text: str, source: int, target: int, path: list[int], n_invalid: int) -> tuple[float, dict]:
         env = self.env
         env.set_state(source, target, list(path), n_invalid=n_invalid)
+        state_dist = env._dist.get(env.cur) if env._dist is not None else None  # clicks to the target from this state
         _, reward, _, _, info = env.step(parse_action(text))
+        info["state_dist"] = state_dist  # set for invalid answers too, so rates can be split by distance
         return reward, info
 
     def __call__(self, prompts, completions, source, target, path, n_invalid, completion_ids=None,
@@ -55,9 +57,21 @@ class StepReward:
         if log_metric:
             n = max(1, len(infos))
             log_metric("env/invalid_rate", sum(not x["valid"] for x in infos) / n)
-            log_metric("env/closer_rate", sum(x.get("shaping_reward", 0) > 0 for x in infos) / n)
+            log_metric("env/closer_rate", sum(x.get("progress", 0) > 0 for x in infos) / n)
+            log_metric("env/sideways_rate", sum(x["valid"] and x.get("progress") == 0 for x in infos) / n)
+            log_metric("env/out_of_reach_rate", sum(bool(x.get("out_of_reach")) for x in infos) / n)
             log_metric("env/success_rate", sum(bool(x.get("success")) for x in infos) / n)
             log_metric("env/cutoff_rate", cut / n)
             for cause, k in Counter(x["cause"] for x in infos if "cause" in x).items():
                 log_metric(f"env/invalid/{cause}", k / n)
+            # The same rates split by clicks to the target (1, 2, 3, 4+), so a harder state mix is not mistaken
+            # for worse play. A bucket is logged only for batches that contain it.
+            by_dist: dict[str, list[dict]] = {}
+            for x in infos:
+                if x.get("state_dist") is not None:
+                    by_dist.setdefault(f"d{min(x['state_dist'], 4)}{'p' if x['state_dist'] >= 4 else ''}", []).append(x)
+            for b, xs in by_dist.items():
+                log_metric(f"env/{b}/invalid_rate", sum(not x["valid"] for x in xs) / len(xs))
+                log_metric(f"env/{b}/closer_rate", sum(x.get("progress", 0) > 0 for x in xs) / len(xs))
+                log_metric(f"env/{b}/share", len(xs) / n)
         return rewards

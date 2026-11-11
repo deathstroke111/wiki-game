@@ -92,6 +92,16 @@ class RewardConfig:
     invalid_by_cause: dict = field(default_factory=lambda: {
         "not_linked": -1.5, "target_not_linked": -1.5, "current_page": -1.5, "revisit": -1.5,
         "unknown_title": -1.75, "unparseable": -2.0})
+    # Stage-4 options, both OFF by default and only active with shaping on (stage-3 held-out games: 27 of 944 valid
+    # moves were sideways moves that left the target out of reach, and half of all valid moves were sideways and
+    # scored a flat 0).
+    # budget_aware: a move after which the target can no longer be reached in the valid moves left ("Steps left"
+    # in the prompt) scores like a farther move, whatever its one-step distance change. Applies only when the
+    # target was still in reach before the move, so states that are already lost keep the plain shaping signal.
+    budget_aware: bool = False
+    # sideways_bonus: a same-distance move earns sideways_bonus * (share of the new page's unvisited links that
+    # are closer to the target). Keep it well under 1 so a closer move always beats a sideways one.
+    sideways_bonus: float = 0.0
 
 
 class WikiGameEnv(gym.Env):
@@ -208,7 +218,18 @@ class WikiGameEnv(gym.Env):
         if self._dist is not None:
             before, after = self._dist.get(self.cur), self._dist.get(node)
             gain = -1 if before is None or after is None else max(-1, min(1, before - after))
-            info["shaping_reward"] = self.rc.shaping * gain
+            info["progress"] = gain  # -1 farther / 0 sideways / +1 closer, before the stage-4 adjustments below
+            left = self.max_steps - self.steps  # valid moves left before this one, as shown in the prompt
+            bonus = 0.0
+            if (self.rc.budget_aware and node != self.target and before is not None and before <= left
+                    and (after is None or after > left - 1)):
+                info["out_of_reach"] = True
+                gain = -1
+            elif gain == 0 and self.rc.sideways_bonus > 0:
+                nxt = [v for v in self.graph.adj[node] if v not in self.visited and v != node]
+                share = sum(self._dist.get(v, 10**9) < after for v in nxt) / len(nxt) if nxt else 0.0
+                bonus = info["sideways_bonus"] = self.rc.sideways_bonus * share
+            info["shaping_reward"] = self.rc.shaping * gain + bonus
             reward += info["shaping_reward"]
         self.cur = node
         self.path.append(node)

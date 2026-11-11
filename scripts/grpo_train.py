@@ -23,6 +23,7 @@ from pathlib import Path
 from wikigame import WikiGraph
 from wikigame.env import RewardConfig
 from wikigame.grpo_reward import StepReward
+from wikigame.llm import resolve_hint
 from wikigame.states import StateMix, sample_states
 from wikigame.tracking import detect_machine, init_run
 
@@ -63,6 +64,21 @@ def main() -> None:
     ap.add_argument("--p-post-invalid", type=float, default=0.0, help="share of states right after an invalid answer")
     ap.add_argument("--flat-invalid", action="store_true",
                     help="ablation: every invalid answer scores the same -2 instead of the ranked tiers")
+    ap.add_argument("--budget-aware", action="store_true",
+                    help="stage 4: a move that leaves the target out of reach in the steps left scores like a farther move")
+    ap.add_argument("--sideways-bonus", type=float, default=0.0,
+                    help="stage 4: same-distance moves earn this x the share of the new page's links that get closer "
+                         "(0 = off; 0.3 suggested)")
+    ap.add_argument("--hint", default=None,
+                    help="prompt hint: a name from wikigame.llm.HINTS (brief/bridge/compare/plan) or literal text "
+                         "(default: the model's usual hint). Evaluate with the same --hint")
+    ap.add_argument("--onpolicy-every", type=int, default=0,
+                    help="stage 4 V2: every N optimizer steps (and before step 1) the model plays a round of whole games "
+                         "and the positions it reached are mixed into the training states (0 = off, scripted states only)")
+    ap.add_argument("--onpolicy-games", type=int, default=32, help="games per on-policy round (training pairs, --hops)")
+    ap.add_argument("--onpolicy-share", type=float, default=0.5,
+                    help="share of training states drawn from the latest round while it lasts (the rest stay scripted)")
+    ap.add_argument("--onpolicy-batch", type=int, default=16, help="games advanced per batched generate call")
     ap.add_argument("--max-steps-game", type=int, default=10)
     ap.add_argument("--no-wandb", action="store_true")
     a = ap.parse_args()
@@ -89,11 +105,13 @@ def main() -> None:
     mix = StateMix(start=a.mix[0], optimal=a.mix[1], noisy=a.mix[2], hops=tuple(a.hops), p_post_invalid=a.p_post_invalid)
     from wikigame import WikiGameEnv
     state_env = WikiGameEnv(graph, max_steps=a.max_steps_game, feedback=a.feedback, seed=a.seed)
-    rows = sample_states(graph, int(a.max_steps * a.prompts_per_step * 1.2) + 8, a.model, mix, seed=a.seed, env=state_env)
+    rows = sample_states(graph, int(a.max_steps * a.prompts_per_step * 1.2) + 8, a.model, mix, seed=a.seed, env=state_env,
+                         hint=resolve_hint(a.hint))
     dataset = Dataset.from_list(rows)
     print(f"{len(rows)} training states: " + str({k: sum(r['kind'] == k for r in rows) for k in ('start', 'optimal', 'noisy')}))
 
-    reward_cfg = RewardConfig(shaping=1.0, invalid_by_cause={} if a.flat_invalid else RewardConfig().invalid_by_cause)
+    reward_cfg = RewardConfig(shaping=1.0, budget_aware=a.budget_aware, sideways_bonus=a.sideways_bonus,
+                              invalid_by_cause={} if a.flat_invalid else RewardConfig().invalid_by_cause)
     reward_fn = StepReward(graph, reward_cfg, max_completion_length=a.max_completion, max_steps=a.max_steps_game,
                            feedback=a.feedback)
 
@@ -130,6 +148,17 @@ def main() -> None:
     )
     trainer = GRPOTrainer(model=model, reward_funcs=reward_fn, args=args, train_dataset=dataset,
                           processing_class=tok, peft_config=peft_config, callbacks=[Telemetry()])
+    if a.onpolicy_every:
+        from wikigame.onpolicy import StatePool, make_callback
+
+        # TRL's constructor only accepts a datasets.Dataset, but train() builds its dataloader from
+        # trainer.train_dataset, so the mixing pool goes in after construction (same rows, same length)
+        pool = trainer.train_dataset = StatePool(rows, a.onpolicy_share, seed=a.seed)
+        trainer.add_callback(make_callback(
+            trainer, pool, graph, every=a.onpolicy_every, n_games=a.onpolicy_games, hops=tuple(a.hops),
+            model_id=a.model, hint=resolve_hint(a.hint), max_steps=a.max_steps_game, max_new_tokens=a.max_completion,
+            temperature=a.temperature, batch_size=a.onpolicy_batch, feedback=a.feedback, seed=a.seed,
+            log_path=Path("data/runs") / f"{experiment}-onpolicy-rounds.jsonl"))
     trainer.train()
     trainer.save_model(str(out))
     (out / "wikigame_config.json").write_text(json.dumps(cfg, indent=2, default=str))

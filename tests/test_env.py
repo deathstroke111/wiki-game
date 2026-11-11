@@ -144,3 +144,59 @@ def test_shaping_is_clipped_and_recorded(graph):
                      options={"source": 0, "target": 3})
     assert ep.success and [s["shaping_reward"] for s in ep.steps] == [1.0, 1.0, 1.0]
     assert abs(ep.total_reward - (3 * 1.0 + 1.0 - 3 * 0.02)) < 1e-9
+
+
+# ---- stage-4 shaping options (both off by default) ---------------------------------------------------------
+@pytest.fixture
+def fork():
+    # S is 2 clicks from T. A is closer; B is sideways (its links: A closer, M not); F is farther.
+    edges = {"S": ["A", "B", "F"], "A": ["T"], "B": ["A", "M"], "M": ["B2"], "B2": ["A"], "F": ["M"], "T": []}
+    return WikiGraph.from_edges({t: f"About {t}" for t in edges}, edges)
+
+
+def _move(graph, title, max_steps=10, **kw):
+    from wikigame.env import RewardConfig
+    env = WikiGameEnv(graph, max_steps=max_steps, reward=RewardConfig(shaping=1.0, **kw), seed=0)
+    env.reset(options={"source": graph.id_of("S"), "target": graph.id_of("T")})
+    _, r, _, _, info = env.step(title)
+    return r, info
+
+
+def test_stage4_flags_off_leave_rewards_unchanged(fork):
+    for title, want in (("A", 1 - 0.02), ("B", -0.02), ("F", -1 - 0.02)):
+        r, info = _move(fork, title, max_steps=2)
+        assert abs(r - want) < 1e-9 and "out_of_reach" not in info and "sideways_bonus" not in info
+
+
+def test_sideways_bonus_is_the_share_of_closer_links_and_stays_below_closer(fork):
+    r, info = _move(fork, "B", sideways_bonus=0.3)
+    assert abs(info["sideways_bonus"] - 0.15) < 1e-9 and abs(r - (0.15 - 0.02)) < 1e-9  # 1 of B's 2 links is closer
+    assert info["progress"] == 0  # still counted as a sideways move
+    assert _move(fork, "F", sideways_bonus=0.3)[0] < r < _move(fork, "A", sideways_bonus=0.3)[0]
+
+
+def test_budget_aware_penalises_moves_that_put_the_target_out_of_reach(fork):
+    # 2 moves left, target 2 clicks away: the sideways move B makes the game unwinnable -> scored like farther
+    r, info = _move(fork, "B", max_steps=2, budget_aware=True, sideways_bonus=0.3)
+    assert info["out_of_reach"] and info["progress"] == 0 and abs(r - (-1 - 0.02)) < 1e-9
+    r, info = _move(fork, "A", max_steps=2, budget_aware=True)  # the closer move keeps it winnable
+    assert "out_of_reach" not in info and abs(r - (1 - 0.02)) < 1e-9
+    # with a spare move the same sideways move is fine and earns its bonus
+    r, info = _move(fork, "B", max_steps=3, budget_aware=True, sideways_bonus=0.3)
+    assert "out_of_reach" not in info and abs(r - (0.15 - 0.02)) < 1e-9
+
+
+def test_budget_aware_leaves_already_lost_states_alone(fork):
+    # 1 move left, target 2 clicks away: nothing can win, so the plain progress signal is kept
+    r, info = _move(fork, "A", max_steps=1, budget_aware=True)
+    assert "out_of_reach" not in info and abs(r - (1 - 0.02)) < 1e-9
+    r, info = _move(fork, "B", max_steps=1, budget_aware=True, sideways_bonus=0.3)
+    assert "out_of_reach" not in info and abs(r - (0.15 - 0.02)) < 1e-9
+
+
+def test_invalid_answers_stay_below_every_valid_move_with_stage4_flags(fork):
+    from wikigame.env import RewardConfig
+    worst_valid = min(_move(fork, t, max_steps=2, budget_aware=True, sideways_bonus=0.3)[0] for t in "ABF")
+    env = WikiGameEnv(fork, reward=RewardConfig(shaping=1.0, budget_aware=True, sideways_bonus=0.3), seed=0)
+    env.reset(options={"source": fork.id_of("S"), "target": fork.id_of("T")})
+    assert env.step("T")[1] < worst_valid  # naming the unlinked target: the mildest invalid tier

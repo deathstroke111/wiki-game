@@ -46,6 +46,27 @@ R1_HINT = ("Reason briefly (a few sentences). Do NOT go through the links one by
            "promising links for reaching the target, then answer immediately with the <answer> tag.")
 
 
+# Stage-4 spike: wordings that ask for a little more reasoning (stage 3 used ~132 of its 512 tokens). All keep the
+# "not one by one" guard, which is what stopped the cut-offs. "brief" is the wording every run so far used.
+HINTS = {
+    "brief": R1_HINT,
+    "bridge": ("Think in two short steps. First say what the target is about and which broader topic (a country, "
+               "field, era or category) connects the current article to it. Then pick the link closest to that topic. "
+               "Do NOT go through the links one by one. Then answer with the <answer> tag."),
+    "compare": ("Do NOT go through the links one by one. Pick the three most promising links and say in one sentence "
+                "each what that article probably links to. Then choose the one most likely to lead to the target and "
+                "answer with the <answer> tag."),
+    "plan": ("Do NOT go through the links one by one. Plan two moves ahead: name the link you would click now and the "
+             "link you would expect to find and click on that next page. If no link is clearly related to the target, "
+             "prefer a broad, well-connected article. Then answer with the <answer> tag."),
+}
+
+
+def resolve_hint(hint: str | None) -> str | None:
+    """A HINTS name -> its text; any other string is used as the hint itself ("" disables, None = model default)."""
+    return HINTS.get(hint, hint) if hint else hint
+
+
 def is_r1(model_id: str) -> bool:
     return "deepseek-r1" in model_id.lower()
 
@@ -79,6 +100,39 @@ def pick_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def batch_generate(model, tok, texts: list[str], max_new_tokens: int, temperature: float,
+                   device=None) -> tuple[list[str], list[int], int]:
+    """One left-padded ``generate`` call over chat-templated ``texts``. Returns (decoded answers, new tokens per
+    answer up to and including its end token, total prompt tokens). Restores the opening <think> tag that R1's
+    template puts in the prompt, like HFPolicy.generate."""
+    import torch
+
+    side = tok.padding_side
+    tok.padding_side = "left"
+    try:
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        enc = tok(texts, return_tensors="pt", padding=True, add_special_tokens=False)
+    finally:
+        tok.padding_side = side
+    enc = enc.to(device or model.device)
+    kw = {"do_sample": True, "temperature": temperature} if temperature > 0 else {"do_sample": False}
+    with torch.inference_mode():
+        out = model.generate(**enc, max_new_tokens=max_new_tokens, pad_token_id=tok.pad_token_id, use_cache=True, **kw)
+    new = out[:, enc["input_ids"].shape[1]:].cpu()
+    eos = torch.tensor(sorted({tok.eos_token_id, tok.pad_token_id}))
+    answers, n_new = [], []
+    for text, row in zip(texts, new):
+        stop = torch.isin(row, eos).nonzero()
+        n = int(stop[0]) + 1 if len(stop) else len(row)
+        out_text = tok.decode(row[:n], skip_special_tokens=True)
+        if text.rstrip().endswith("<think>"):
+            out_text = "<think>\n" + out_text
+        answers.append(out_text)
+        n_new.append(n)
+    return answers, n_new, int(enc["attention_mask"].sum())
 
 
 class HFPolicy:
@@ -130,6 +184,21 @@ class HFPolicy:
         if text.rstrip().endswith("<think>"):  # R1's template opens the think block in the prompt; restore it
             text_out = "<think>\n" + text_out
         return lenient_answer(text_out) if self.lenient else text_out
+
+    def generate_batch(self, batch: list[list[dict]]) -> list[str]:
+        """Like ``generate`` for several prompts in one padded call (the parallel game player's model hook).
+        Sampling noise differs from one-at-a-time calls, so batched and sequential evals are not sample-identical."""
+        if self.system_in_user:
+            batch = [merge_system(m, self.hint) for m in batch]
+        texts = [self.tok.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in batch]
+        t0 = time.time()
+        outs, n_new, n_prompt = batch_generate(self.model, self.tok, texts, self.max_new_tokens, self.temperature,
+                                               self.device)
+        self.calls += len(texts)
+        self.prompt_tokens += n_prompt
+        self.new_tokens += sum(n_new)
+        self.seconds += time.time() - t0  # wall time of the batch: sec_per_call becomes time per batched answer
+        return [lenient_answer(o) for o in outs] if self.lenient else outs
 
     def __call__(self, obs: str, env: WikiGameEnv) -> str:
         return self.generate(build_messages(obs))

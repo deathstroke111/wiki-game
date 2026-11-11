@@ -97,3 +97,36 @@ def test_reward_call_logs_metrics_and_cutoffs(graph):
 
 def test_training_reward_is_shaped_eval_reward_is_not():
     assert default_reward_config().shaping > 0 and RewardConfig().shaping == 0
+
+
+def test_reward_call_logs_rates_split_by_distance(graph):
+    rows = sample_states(graph, 12, MODEL, StateMix(hops=(1, 2, 3)), seed=4)
+    logged = {}
+    sr = StepReward(graph, RewardConfig(shaping=1.0, budget_aware=True, sideways_bonus=0.3))
+    comps = [ans(graph.titles[r["links"] and graph.id_of(r["links"][0])]) for r in rows]
+    sr(prompts=None, completions=comps, source=[r["source"] for r in rows], target=[r["target"] for r in rows],
+       path=[r["path"] for r in rows], n_invalid=[0] * len(rows), log_metric=lambda k, v: logged.__setitem__(k, v))
+    shares = {k: v for k, v in logged.items() if k.endswith("/share")}
+    assert shares and abs(sum(shares.values()) - 1) < 1e-9 and set(shares) <= {f"env/{b}/share" for b in ("d1", "d2", "d3", "d4p")}
+    assert all(f"env/{k.split('/')[1]}/closer_rate" in logged and f"env/{k.split('/')[1]}/invalid_rate" in logged for k in shares)
+    assert {"env/sideways_rate", "env/out_of_reach_rate"} <= set(logged) and logged["env/invalid_rate"] == 0
+
+
+def test_hint_names_resolve_and_reach_the_training_prompt(graph):
+    from wikigame.llm import HINTS, R1_HINT, resolve_hint
+    assert HINTS["brief"] == R1_HINT and resolve_hint("plan") == HINTS["plan"]
+    assert resolve_hint(None) is None and resolve_hint("") == "" and resolve_hint("my own text") == "my own text"
+    assert all("Do NOT go through the links one by one" in h for h in HINTS.values())
+    r1 = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+    text = sample_states(graph, 2, r1, seed=1, hint=resolve_hint("plan"))[0]["prompt"][0]["content"]
+    assert "two moves ahead" in text and "briefly" not in text
+    assert sample_states(graph, 2, r1, seed=1)[0]["prompt"] == sample_states(graph, 2, r1, seed=1, hint=HINTS["brief"])[0]["prompt"]
+
+
+def test_probe_training_states_avoid_heldout_pairs(graph):
+    from wikigame.probe import training_states
+    states = training_states(graph, [2, 3], 3, seed=0)
+    held = heldout_pairs(graph)
+    assert states and all(min(s["dist"], 3) in (2, 3) for s in states)
+    assert all((graph.id_of(s["path"][0]), graph.id_of(s["target"])) not in held for s in states)
+    assert states == training_states(graph, [2, 3], 3, seed=0)

@@ -52,3 +52,17 @@ def score_answer(graph: WikiGraph, state: dict, text: str) -> dict:
     else:
         outcome = "closer" if after < before else "sideways"
     return {"chosen": action, "outcome": outcome, "cause": None}
+
+
+def training_states(graph: WikiGraph, dists: list[int], per_dist: int, seed: int = 0) -> list[dict]:
+    """per_dist states at each distance from the training sampler (so held-out eval pairs never appear), in the
+    probe's state format. The last distance includes farther ones. Used to compare prompt wordings."""
+    from .states import StateMix, sample_states as sample_training_states
+
+    rows = sample_training_states(graph, 12 * per_dist * len(dists), "probe", StateMix(0.4, 0.2, 0.4, hops=(2, 3, 4)), seed)
+    states = []
+    for r in rows:
+        d = graph.dist_to(r["target"]).get(r["path"][-1])
+        if d is not None:
+            states.append({"target": graph.titles[r["target"]], "path": [graph.titles[v] for v in r["path"]], "dist": d})
+    return sample_states(states, dists, per_dist, seed)

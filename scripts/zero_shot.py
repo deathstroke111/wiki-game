@@ -15,7 +15,7 @@ from pathlib import Path
 
 from wikigame import WikiGameEnv, WikiGraph
 from wikigame.eval import make_pairs, summarize
-from wikigame.llm import DEFAULT_MODEL, HFPolicy
+from wikigame.llm import DEFAULT_MODEL, HFPolicy, resolve_hint
 from wikigame.rollout import run_episode
 from wikigame.tracking import detect_machine, init_run, log_episodes, log_eval
 
@@ -37,7 +37,12 @@ def main() -> None:
                     help="also accept a bare/```json title (separates format failures from navigation failures)")
     ap.add_argument("--feedback", action="store_true",
                     help="env tells the model why its last answer was invalid (changes the observation)")
+    ap.add_argument("--hint", default=None, help="prompt hint: a name from wikigame.llm.HINTS or literal text "
+                                                 "(default: the model's usual hint; must match the adapter's training)")
     ap.add_argument("--adapter", default=None, help="LoRA adapter dir from GRPO training (evaluates the trained model)")
+    ap.add_argument("--batch-games", type=int, default=0,
+                    help="play this many games at once with batched generation (0 = one call at a time, as every "
+                         "baseline so far). Same pairs and metrics; sampling noise differs, so not sample-identical")
     ap.add_argument("--name", default=None, help="policy/experiment name for W&B (default derived from model+flags)")
     ap.add_argument("--no-wandb", action="store_true", help="skip W&B (local JSONL only)")
     a = ap.parse_args()
@@ -47,7 +52,7 @@ def main() -> None:
     pairs = {k: v[: a.n_per_hop] for k, v in pool.items()}
     t0 = time.time()
     policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient,
-                      temperature=a.temperature, seed=a.seed, adapter=a.adapter)
+                      temperature=a.temperature, seed=a.seed, adapter=a.adapter, hint=resolve_hint(a.hint))
     print(f"loaded {a.model} on {policy.device} in {time.time() - t0:.0f}s", flush=True)
 
     short = a.model.split("/")[-1].lower()
@@ -61,17 +66,29 @@ def main() -> None:
 
     out = Path("data/runs"); out.mkdir(parents=True, exist_ok=True)
     local = out / f"{name}-{detect_machine()}-{int(t0)}.jsonl"
-    episodes, total = [], sum(len(v) for v in pairs.values())
-    for k, plist in pairs.items():
-        for s, t in plist:
-            ep = run_episode(env, policy, options={"source": s, "target": t}, n_hops=k)
-            episodes.append(ep)
-            with local.open("a") as f:  # crash-safe: every finished episode is on disk immediately
-                f.write(json.dumps(ep.to_dict()) + "\n")
-            st = policy.stats()
-            print(f"[{len(episodes)}/{total}] hop{k} {ep.source} -> {ep.target}: {ep.end_reason} "
-                  f"(valid {ep.n_valid}, invalid {ep.n_invalid}) | {st['sec_per_call']:.1f}s/call, "
-                  f"{time.time() - t0:.0f}s elapsed", flush=True)
+    cfg["batch_games"] = a.batch_games
+    total, done = sum(len(v) for v in pairs.values()), []
+
+    def finished(ep) -> None:
+        done.append(ep)
+        with local.open("a") as f:  # crash-safe: every finished episode is on disk immediately
+            f.write(json.dumps(ep.to_dict()) + "\n")
+        st = policy.stats()
+        print(f"[{len(done)}/{total}] hop{ep.n_hops} {ep.source} -> {ep.target}: {ep.end_reason} "
+              f"(valid {ep.n_valid}, invalid {ep.n_invalid}) | {st['sec_per_call']:.1f}s/call, "
+              f"{time.time() - t0:.0f}s elapsed", flush=True)
+
+    if a.batch_games:
+        from wikigame.parallel import play_games
+
+        games = [(s, t, k) for k, plist in pairs.items() for s, t in plist]
+        episodes, _ = play_games(graph, policy.generate_batch, games, batch_size=a.batch_games, max_steps=a.max_steps,
+                                 feedback=a.feedback, on_episode=lambda i, ep: finished(ep))
+    else:
+        for k, plist in pairs.items():
+            for s, t in plist:
+                finished(run_episode(env, policy, options={"source": s, "target": t}, n_hops=k))
+        episodes = done
 
     metrics = summarize(episodes)
     metrics.update({f"gen_{k}": v for k, v in policy.stats().items()})

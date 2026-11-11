@@ -8,7 +8,7 @@ State kinds:
   start    the first move of a fresh game (curriculum: pairs at 1..k hops)
   optimal  a state partway along a shortest path (the model has done well so far)
   noisy    a state reached by a scripted epsilon-greedy walk (oracle moves with random wrong turns), a stand-in
-           for the model's own mistakes until on-policy rollouts are wired in
+           for the model's own mistakes (on-policy rounds, onpolicy.py, add the positions the model really reaches)
 Eval pairs (eval.heldout_pairs) are never sampled.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _noisy_prefix(graph: WikiGraph, env: WikiGameEnv, dist: dict[int, int], s: i
 
 
 def sample_states(graph: WikiGraph, n: int, model_id: str, mix: StateMix | None = None, seed: int = 0,
-                  env: WikiGameEnv | None = None) -> list[dict]:
+                  env: WikiGameEnv | None = None, hint: str | None = None) -> list[dict]:
     """``n`` distinct training rows (columns: prompt, source, target, path, n_invalid, kind, n_hops, links)."""
     mix = mix or StateMix()
     rng = random.Random(seed)
@@ -84,6 +84,6 @@ def sample_states(graph: WikiGraph, n: int, model_id: str, mix: StateMix | None 
             continue
         seen.add(key)
         obs = env.set_state(s, t, path, n_invalid=1 if last else 0, last_invalid=last)
-        rows.append({"prompt": training_messages(obs, model_id), "source": s, "target": t, "path": path,
+        rows.append({"prompt": training_messages(obs, model_id, hint), "source": s, "target": t, "path": path,
                      "n_invalid": 1 if last else 0, "kind": kind, "n_hops": k, "links": list(env.links)})
     return rows
