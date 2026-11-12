@@ -20,6 +20,29 @@ from wikigame.rollout import run_episode
 from wikigame.tracking import detect_machine, init_run, log_episodes, log_eval
 
 
+class VLLMPolicy:
+    """The eval-side twin of HFPolicy on vLLM: same prompt format (wikigame.llm.training_messages = HFPolicy's
+    system/hint handling), lenient parsing via play_games, adapter loaded as a LoRA (not merged)."""
+
+    def __init__(self, a):
+        from transformers import AutoTokenizer
+
+        from wikigame.llm import R1_HINT, is_r1, training_messages
+        from wikigame.rl.generation import VLLMGenerator, chat_batch_generate
+
+        self.device = "cuda (vllm)"
+        self.system_in_user = is_r1(a.model)
+        hint = resolve_hint(a.hint)
+        self.hint = (R1_HINT if self.system_in_user else None) if hint is None else (hint or None)  # as HFPolicy
+        self.gen = VLLMGenerator(a.model, gpu_memory_utilization=a.vllm_mem, seed=a.seed, adapter=a.adapter)
+        tok = AutoTokenizer.from_pretrained(a.model)
+        self.generate_batch = chat_batch_generate(self.gen, tok, a.max_new_tokens, a.temperature)
+        self.play_kwargs = {"messages_fn": lambda o: training_messages(o, a.model, hint), "lenient": a.lenient}
+
+    def stats(self) -> dict:
+        return self.gen.stats.summary()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=DEFAULT_MODEL)
@@ -43,6 +66,9 @@ def main() -> None:
     ap.add_argument("--batch-games", type=int, default=0,
                     help="play this many games at once with batched generation (0 = one call at a time, as every "
                          "baseline so far). Same pairs and metrics; sampling noise differs, so not sample-identical")
+    ap.add_argument("--backend", default="hf", choices=["hf", "vllm"],
+                    help="vllm = batched vLLM generation (Linux + CUDA; plays --batch-games games at once, default 64)")
+    ap.add_argument("--vllm-mem", type=float, default=0.85, help="vLLM's share of the GPU when --backend vllm")
     ap.add_argument("--name", default=None, help="policy/experiment name for W&B (default derived from model+flags)")
     ap.add_argument("--no-wandb", action="store_true", help="skip W&B (local JSONL only)")
     a = ap.parse_args()
@@ -51,8 +77,11 @@ def main() -> None:
     pool = make_pairs(graph, hops=tuple(a.hops), n_per_hop=a.pair_pool)
     pairs = {k: v[: a.n_per_hop] for k, v in pool.items()}
     t0 = time.time()
-    policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient,
-                      temperature=a.temperature, seed=a.seed, adapter=a.adapter, hint=resolve_hint(a.hint))
+    if a.backend == "vllm":
+        policy = VLLMPolicy(a)
+    else:
+        policy = HFPolicy(a.model, device=a.device, max_new_tokens=a.max_new_tokens, lenient=a.lenient,
+                          temperature=a.temperature, seed=a.seed, adapter=a.adapter, hint=resolve_hint(a.hint))
     print(f"loaded {a.model} on {policy.device} in {time.time() - t0:.0f}s", flush=True)
 
     short = a.model.split("/")[-1].lower()
@@ -66,7 +95,9 @@ def main() -> None:
 
     out = Path("data/runs"); out.mkdir(parents=True, exist_ok=True)
     local = out / f"{name}-{detect_machine()}-{int(t0)}.jsonl"
-    cfg["batch_games"] = a.batch_games
+    if a.backend == "vllm" and not a.batch_games:
+        a.batch_games = 64
+    cfg.update(batch_games=a.batch_games, backend=a.backend)
     total, done = sum(len(v) for v in pairs.values()), []
 
     def finished(ep) -> None:
@@ -83,7 +114,7 @@ def main() -> None:
 
         games = [(s, t, k) for k, plist in pairs.items() for s, t in plist]
         episodes, _ = play_games(graph, policy.generate_batch, games, batch_size=a.batch_games, max_steps=a.max_steps,
-                                 feedback=a.feedback, on_episode=lambda i, ep: finished(ep))
+                                 feedback=a.feedback, on_episode=lambda i, ep: finished(ep), **getattr(policy, "play_kwargs", {}))
     else:
         for k, plist in pairs.items():
             for s, t in plist:

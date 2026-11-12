@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gymnasium>=1.4.0",
-    "numpy>=2.5.4",
+    "numpy>=2.3.5,<2.5",  # vllm 0.32 -> numba 0.65 needs numpy < 2.5
     "wandb>=0.31.0",
 ]
 
@@ -26,19 +26,17 @@ dev = [
 llm = [
     "accelerate>=1.15.0",
     "peft>=0.21.2",
-    "torch>=2.15.0",
-    "transformers>=5.22.1",
+    # pinned to what vllm 0.32 (the newest vLLM TRL 1.17 accepts) requires, so trainer and vLLM share one environment
+    "torch==2.13.0",
+    "transformers>=5.19.0,<5.20",
     "trl>=1.17.1",
 ]
+# fast generation for training rollouts and evals; Linux + CUDA only (no macOS wheels), the Mac falls back to HF generate
+vllm = [
+    "vllm==0.32.0; sys_platform == 'linux'",
+]
 
-# CUDA torch on Windows/Linux (the RTX is Blackwell, needs a CUDA >= 12.8 build); macOS keeps the PyPI wheel (MPS).
-[[tool.uv.index]]
-name = "pytorch-cu132"
-url = "https://download.pytorch.org/whl/cu132"
-explicit = true
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+# torch 2.13 from PyPI: the Linux wheel is the CUDA 13.0 build (includes sm_120 Blackwell); macOS gets the MPS wheel.
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
