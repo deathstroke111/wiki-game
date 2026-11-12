@@ -1,7 +1,8 @@
 """Where training groups come from: prompts in, G scored answers per prompt out.
 
 ``StepSource`` is the per-step setup every stage so far used: one prompt = one game state, its G answers are scored
-by replaying that one move in the env (``grpo_reward.StepReward``, unchanged). States come from a ``StatePool``
+by replaying that one move in the env (``grpo_reward.StepReward``, unchanged). ``PlayoutSource`` (v2) scores
+each answer by playing its game out to the end with the current model instead. States come from a ``StatePool``
 (scripted states, plus the latest on-policy round when ``OnPolicyRounds`` is on). A whole-game source (v2) will plug
 in here with the same ``next_batch`` contract, without touching the algorithms or the learner.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +61,124 @@ class StepSource:
             i += n
         metrics["time/generate_s"] = gen_s
         metrics["onpolicy/drawn_this_step"] = sum(r["kind"] == "onpolicy" for r in rows) / len(rows)
+        return groups, metrics
+
+
+@dataclass
+class PlayoutReturn:
+    """How a played-out game is scored (v2, the user's choice: win + speed, partial credit for losses).
+
+      win   1 - move_cost x moves used from the branch position on (the branching move included); with the
+            10-move cap a win never scores below 0.5
+      loss  loss_credit x share of the branch position's distance to the target closed by where the game ended
+            (0 if it ended no closer), minus invalid_end_penalty if it ended on too many invalid answers
+    Every win outscores every loss (0.5 > 0.3)."""
+    move_cost: float = 0.05
+    loss_credit: float = 0.3
+    invalid_end_penalty: float = 0.3
+
+    def score(self, success: bool, moves: int, d0: int | None, d_final: int | None, end_reason: str) -> float:
+        if success:
+            return 1.0 - self.move_cost * moves
+        closed = max(0.0, (d0 - d_final) / d0) if d0 and d_final is not None else 0.0
+        return self.loss_credit * closed - (self.invalid_end_penalty if end_reason == "invalid_action" else 0.0)
+
+
+class PlayoutSource:
+    """v2 'branch and play out': G answers to one game position, each played out to the end of the game by the
+    current model, each answer scored by how its game ended (``PlayoutReturn``). Only the branching answers are
+    trained; the play-out moves are sampled from the same policy (same temperature) but get no gradient.
+
+    All G x prompts games advance together, one batched generate call per move (like ``parallel.play_games``)."""
+
+    def __init__(self, pool: StatePool, graph: WikiGraph, tok, generator: Generator, *, num_generations: int,
+                 max_tokens: int, temperature: float, model_id: str, hint: str | None, max_steps_game: int = 10,
+                 feedback: bool = False, lenient: bool = False, returns: PlayoutReturn | None = None, seed: int = 0):
+        self.pool, self.graph, self.tok, self.gen = pool, graph, tok, generator
+        self.G, self.max_tokens, self.temperature = num_generations, max_tokens, temperature
+        self.model_id, self.hint, self.max_steps_game = model_id, hint, max_steps_game
+        self.feedback, self.lenient = feedback, lenient
+        self.returns = returns or PlayoutReturn()
+        self.rng = random.Random(seed)
+        self.cursor = 0
+        self._dist: dict[int, dict[int, int]] = {}
+
+    def dist(self, target: int) -> dict[int, int]:
+        if target not in self._dist:
+            if len(self._dist) > 512:
+                self._dist.clear()
+            self._dist[target] = self.graph.dist_to(target)
+        return self._dist[target]
+
+    def _step(self, game: dict, text: str) -> None:
+        from ..env import parse_action
+        from ..llm import lenient_answer
+
+        text = lenient_answer(text) if self.lenient else text
+        game["obs"], _, term, trunc, info = game["env"].step(parse_action(text))
+        game["moves"] += 1
+        game["infos"].append(info)
+        if term or trunc:
+            game["done"] = True
+            game["success"] = bool(info.get("success"))
+            game["end"] = "success" if game["success"] else info.get("reason", "step_limit")
+
+    def next_batch(self, n_prompts: int) -> tuple[list[Group], dict[str, float]]:
+        from ..env import WikiGameEnv
+
+        rows = [self.pool[self.cursor + i] for i in range(n_prompts)]
+        self.cursor += n_prompts
+        enc = [encode_prompt(self.tok, r["prompt"]) for r in rows]
+        t0 = time.time()
+        out = self.gen.generate([ids for ids, _ in enc], self.G, self.max_tokens, self.temperature)
+        gen_s = time.time() - t0
+        games = []
+        for gi, (row, (_, opened), samples) in enumerate(zip(rows, enc, out)):
+            for s in samples:
+                env = WikiGameEnv(self.graph, max_steps=self.max_steps_game, feedback=self.feedback,
+                                  seed=self.rng.randrange(2**31))
+                env.set_state(row["source"], row["target"], row["path"], n_invalid=row["n_invalid"])
+                game = {"group": gi, "env": env, "moves": 0, "infos": [], "done": False, "success": False,
+                        "end": "", "text": restore_think(s.text, opened),
+                        "d0": self.dist(row["target"]).get(row["path"][-1])}
+                self._step(game, game["text"])  # the branching move: the answer being trained
+                games.append(game)
+        branch_infos = [g["infos"][0] for g in games]
+        generate = chat_batch_generate(self.gen, self.tok, self.max_tokens, self.temperature)
+        t1, calls = time.time(), 0
+        running = [g for g in games if not g["done"]]
+        while running:  # play every unfinished game one move further per batched call
+            texts = generate([training_messages(g["obs"], self.model_id, self.hint) for g in running])
+            calls += 1
+            for g, text in zip(running, texts):
+                self._step(g, text)
+            running = [g for g in running if not g["done"]]
+        play_s = time.time() - t1
+        groups, rets = [], []
+        for gi, (row, (ids, _), samples) in enumerate(zip(rows, enc, out)):
+            mine = [g for g in games if g["group"] == gi]
+            rs = []
+            for g in mine:
+                env = g["env"]
+                d_final = self.dist(row["target"]).get(env.cur)
+                rs.append(self.returns.score(g["success"], g["moves"], g["d0"], d_final, g["end"]))
+            groups.append(Group(row, ids, samples, [g["text"] for g in mine], rs))
+            rets += rs
+        n = len(games)
+        ends = Counter(g["end"] for g in games)
+        metrics = {"time/generate_s": gen_s, "time/playout_s": play_s, "playout/calls": calls,
+                   "playout/success": sum(g["success"] for g in games) / n,
+                   "playout/moves_mean": sum(g["moves"] for g in games) / n,
+                   **{f"playout/end_{k}": ends.get(k, 0) / n for k in ("success", "invalid_action", "step_limit", "dead_end")},
+                   "env/invalid_rate": sum(not i["valid"] for i in branch_infos) / n,
+                   "env/closer_rate": sum(i.get("progress", 0) > 0 for i in branch_infos) / n,
+                   "env/sideways_rate": sum(i["valid"] and i.get("progress") == 0 for i in branch_infos) / n,
+                   "onpolicy/drawn_this_step": sum(r["kind"] == "onpolicy" for r in rows) / len(rows)}
+        for cause, k in Counter(i["cause"] for i in branch_infos if i.get("cause")).items():
+            metrics[f"env/invalid/{cause}"] = k / n
+        win = [g["moves"] for g in games if g["success"]]
+        if win:
+            metrics["playout/moves_to_win"] = sum(win) / len(win)
         return groups, metrics
 
 

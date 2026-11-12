@@ -34,7 +34,12 @@ class VLLMPolicy:
         self.system_in_user = is_r1(a.model)
         hint = resolve_hint(a.hint)
         self.hint = (R1_HINT if self.system_in_user else None) if hint is None else (hint or None)  # as HFPolicy
-        self.gen = VLLMGenerator(a.model, gpu_memory_utilization=a.vllm_mem, seed=a.seed, adapter=a.adapter)
+        from transformers import GenerationConfig
+
+        gc = GenerationConfig.from_pretrained(a.model)  # HF generate samples with these defaults (R1: top_p 0.95)
+        self.top_p = gc.top_p if (gc.do_sample and gc.top_p) else 1.0
+        self.gen = VLLMGenerator(a.model, gpu_memory_utilization=a.vllm_mem, seed=a.seed, adapter=a.adapter,
+                                 top_p=self.top_p)
         tok = AutoTokenizer.from_pretrained(a.model)
         self.generate_batch = chat_batch_generate(self.gen, tok, a.max_new_tokens, a.temperature)
         self.play_kwargs = {"messages_fn": lambda o: training_messages(o, a.model, hint), "lenient": a.lenient}
@@ -97,7 +102,9 @@ def main() -> None:
     local = out / f"{name}-{detect_machine()}-{int(t0)}.jsonl"
     if a.backend == "vllm" and not a.batch_games:
         a.batch_games = 64
-    cfg.update(batch_games=a.batch_games, backend=a.backend)
+    gen_cfg = getattr(getattr(policy, "model", None), "generation_config", None)
+    cfg.update(batch_games=a.batch_games, backend=a.backend, adapter_merged=False,
+               top_p=getattr(policy, "top_p", None) or (getattr(gen_cfg, "top_p", None) if a.temperature > 0 else None))
     total, done = sum(len(v) for v in pairs.values()), []
 
     def finished(ep) -> None:
@@ -126,7 +133,7 @@ def main() -> None:
     print("\n" + " ".join(f"{k}={v:.3f}" for k, v in metrics.items() if k.startswith(("success", "invalid", "path_len"))))
     if not a.no_wandb:
         run = init_run(name, "eval" if a.adapter else "baseline", cfg, graph, a.graph_name,
-                       tags=["grpo-eval" if a.adapter else "zero-shot", "llm"])
+                       tags=["grpo-eval" if a.adapter else "zero-shot", "llm", f"backend:{a.backend}"])
         log_eval(run, metrics, step=0)
         log_episodes(run, episodes, step=0, name="eval")
         print("W&B:", run.url)

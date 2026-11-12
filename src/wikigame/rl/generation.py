@@ -63,8 +63,10 @@ class VLLMGenerator:
 
     def __init__(self, model_id: str, *, gpu_memory_utilization: float = 0.35, max_model_len: int = 4096,
                  max_lora_rank: int = 16, seed: int = 0, dtype: str = "bfloat16", enable_sleep_mode: bool = False,
-                 adapter: str | None = None):
+                 adapter: str | None = None, top_p: float = 1.0):
         from vllm import LLM
+
+        self.top_p = top_p  # 1.0 = plain temperature sampling (training); evals pass the model's default (R1: 0.95)
 
         kw = dict(model=model_id, dtype=dtype, gpu_memory_utilization=gpu_memory_utilization,
                   max_model_len=max_model_len, enable_lora=True, max_lora_rank=max_lora_rank, max_loras=1, seed=seed,
@@ -110,7 +112,8 @@ class VLLMGenerator:
         from vllm.inputs import TokensPrompt
 
         self.wake_up()
-        sp = SamplingParams(n=n, temperature=temperature, max_tokens=max_tokens, logprobs=0, seed=seed)
+        sp = SamplingParams(n=n, temperature=temperature, top_p=self.top_p, max_tokens=max_tokens, logprobs=0,
+                            seed=seed)
         t0 = time.time()
         outs = self.llm.generate([TokensPrompt(prompt_token_ids=list(p)) for p in prompt_ids], sp,
                                  lora_request=self._lora, use_tqdm=False)

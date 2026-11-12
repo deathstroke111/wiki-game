@@ -59,6 +59,17 @@ def main() -> None:
                     help="optimizer updates per generated batch (1 = on-policy, ratio exactly 1)")
     ap.add_argument("--tis-cap", type=float, default=0.0,
                     help="truncated importance-sampling cap for the vLLM/trainer mismatch (0 = off; TRL uses 3)")
+    # where groups come from (v2)
+    ap.add_argument("--source", default="step", choices=["step", "playout"],
+                    help="step = score each answer by its one move (StepReward, stages 1-4); playout = v2 branch and "
+                         "play out: each answer's game is played to the end by the model and scored by its outcome")
+    ap.add_argument("--move-cost", type=float, default=0.05, help="playout: a win scores 1 - this x moves used")
+    ap.add_argument("--loss-credit", type=float, default=0.3,
+                    help="playout: a loss scores this x the share of the distance to the target it closed")
+    ap.add_argument("--invalid-end-penalty", type=float, default=0.3,
+                    help="playout: subtracted from a loss that ended on too many invalid answers")
+    ap.add_argument("--playout-lenient", action="store_true",
+                    help="playout: accept bare/```json titles in the play-out moves and the branching move")
     # rollout / optimisation
     ap.add_argument("--backend", default="auto", choices=["auto", "vllm", "hf"],
                     help="generation: vllm (Linux+CUDA), hf (model.generate), auto = vllm when available")
@@ -104,7 +115,7 @@ def main() -> None:
     from wikigame.onpolicy import StatePool
     from wikigame.rl.generation import HFGenerator, VLLMGenerator
     from wikigame.rl.learner import Learner
-    from wikigame.rl.sources import OnPolicyRounds, StepSource
+    from wikigame.rl.sources import OnPolicyRounds, PlayoutReturn, PlayoutSource, StepSource
     from wikigame.rl.trainer import RLTrainer, TrainConfig
 
     random.seed(a.seed)
@@ -116,7 +127,7 @@ def main() -> None:
         drop_zero_std=None if a.drop_zero_std is None else a.drop_zero_std == "on")
     machine = detect_machine()
     short = a.model.split("/")[-1].lower().replace("deepseek-r1-distill-qwen-", "r1-").replace("-instruct", "")
-    experiment = f"rl-{a.algo}-{short}-stage{a.stage}"
+    experiment = f"rl-{a.algo}{'-playout' if a.source == 'playout' else ''}-{short}-stage{a.stage}"
     out = Path(a.out or f"data/ckpt/{experiment}")
     hint = resolve_hint(a.hint)
 
@@ -147,8 +158,16 @@ def main() -> None:
     if gen is None:
         gen = HFGenerator(learner.model, learner.tok)
 
-    source = StepSource(pool, learner.tok, gen, reward, num_generations=a.num_generations,
-                        max_tokens=a.max_completion, temperature=a.temperature)
+    if a.source == "playout":
+        returns = PlayoutReturn(move_cost=a.move_cost, loss_credit=a.loss_credit,
+                                invalid_end_penalty=a.invalid_end_penalty)
+        source = PlayoutSource(pool, graph, learner.tok, gen, num_generations=a.num_generations,
+                               max_tokens=a.max_completion, temperature=a.temperature, model_id=a.model, hint=hint,
+                               max_steps_game=a.max_steps_game, feedback=a.feedback, lenient=a.playout_lenient,
+                               returns=returns, seed=a.seed)
+    else:
+        source = StepSource(pool, learner.tok, gen, reward, num_generations=a.num_generations,
+                            max_tokens=a.max_completion, temperature=a.temperature)
     rounds = None
     if a.onpolicy_every:
         rounds = OnPolicyRounds(pool, graph, gen, learner.tok, every=a.onpolicy_every, n_games=a.onpolicy_games,
@@ -166,7 +185,7 @@ def main() -> None:
     log_fn = None
     if not a.no_wandb:
         run = init_run(experiment, "train", run_cfg, graph, a.graph_name,
-                       tags=["rl", a.algo, f"backend:{backend}", "per-step", f"stage:{a.stage}"], group="rl-loop")
+                       tags=["rl", a.algo, f"backend:{backend}", f"source:{a.source}", f"stage:{a.stage}"], group="rl-loop")
         log_fn = lambda m, step: run.log(m, step=step)  # noqa: E731
     trainer = RLTrainer(learner, gen, source, alg, cfg, rounds=rounds, log_fn=log_fn)
     trainer.run()

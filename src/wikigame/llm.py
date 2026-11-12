@@ -154,10 +154,12 @@ class HFPolicy:
         self.device = device or pick_device()
         self.tok = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype=getattr(torch, dtype)).to(self.device)
-        if adapter:  # a LoRA adapter from GRPO training: merge it so generation runs at base-model speed
+        if adapter:  # a LoRA adapter from GRPO training, applied UNMERGED
+            # merge_and_unload() into bf16 weights rounded most of the update away (2026-11-12: ~80% of weights
+            # unchanged, ~half of the update kept), so every HF eval of a trained adapter before then under-measured it
             from peft import PeftModel
 
-            self.model = PeftModel.from_pretrained(self.model, adapter).merge_and_unload()
+            self.model = PeftModel.from_pretrained(self.model, adapter)
         self.model = self.model.eval()
         self.adapter = adapter
         self.calls = self.prompt_tokens = self.new_tokens = 0

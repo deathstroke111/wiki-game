@@ -75,15 +75,9 @@ class Learner:
         with self.autocast:
             logits = self.model(input_ids=ids, attention_mask=att, position_ids=pos, logits_to_keep=cw + 1,
                                 use_cache=False).logits
-        logits = logits[:, :-1].float() / self.temperature  # position j predicts completion token j
+        logits = logits[:, :-1]  # position j predicts completion token j (model dtype, no fp32 copy kept)
         targets = ids[:, -cw:]
-        logz = torch.logsumexp(logits, dim=-1)
-        logp = logits.gather(-1, targets.unsqueeze(-1)).squeeze(-1) - logz
-        ent = None
-        if with_entropy:
-            with torch.no_grad():
-                probs = torch.softmax(logits, dim=-1)
-                ent = logz - (probs * logits).sum(-1)
+        logp, ent = selective_logprobs(logits, targets, 1.0 / self.temperature, with_entropy)
         return logp, mask, ent
 
     # ---- optimisation ------------------------------------------------------------------------------------------
@@ -117,6 +111,50 @@ class Learner:
         self.opt.load_state_dict(torch.load(path / "optimizer.pt", map_location=self.device))
         self.sched.load_state_dict(torch.load(path / "scheduler.pt"))
         self.updates = json.loads((path / "trainer_state.json").read_text()).get("updates", 0)
+
+
+class _SelectiveLogProb(torch.autograd.Function):
+    """log softmax(logits * s)[target] per position, without keeping an fp32 copy of the (B, T, vocab) logits for
+    backward: only the model-dtype logits and the per-position log-normaliser are saved, and the softmax is
+    recomputed row by row in backward (d logp / d logits = s * (onehot - softmax)). With a 152k vocabulary an fp32
+    copy is ~2.5 GB for 8 x 512 tokens, which ran the 24 GB card out of memory next to vLLM (2026-11-12)."""
+
+    @staticmethod
+    def forward(ctx, logits, targets, scale):
+        lz = torch.empty(targets.shape, dtype=torch.float32, device=logits.device)
+        lp = torch.empty_like(lz)
+        for i in range(logits.shape[0]):  # one row at a time: the fp32 temporary is (T, vocab), not (B, T, vocab)
+            row = logits[i].float() * scale
+            lz[i] = torch.logsumexp(row, dim=-1)
+            lp[i] = row.gather(-1, targets[i].unsqueeze(-1)).squeeze(-1) - lz[i]
+        ctx.save_for_backward(logits, targets, lz)
+        ctx.scale = scale
+        return lp
+
+    @staticmethod
+    def backward(ctx, grad_lp):
+        logits, targets, lz = ctx.saved_tensors
+        grad = torch.empty_like(logits)
+        for i in range(logits.shape[0]):
+            p = torch.exp(logits[i].float() * ctx.scale - lz[i].unsqueeze(-1))
+            p.neg_()
+            p.scatter_add_(-1, targets[i].unsqueeze(-1), torch.ones_like(lz[i]).unsqueeze(-1))
+            grad[i] = (p * (grad_lp[i].unsqueeze(-1) * ctx.scale)).to(logits.dtype)
+        return grad, None, None
+
+
+def selective_logprobs(logits: torch.Tensor, targets: torch.Tensor, scale: float = 1.0,
+                       with_entropy: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """(B, T) fp32 log-probs of ``targets`` under softmax(logits * scale), and optionally the (B, T) entropy."""
+    lp = _SelectiveLogProb.apply(logits, targets, scale)
+    ent = None
+    if with_entropy:
+        with torch.no_grad():
+            ent = torch.empty_like(lp)
+            for i in range(logits.shape[0]):
+                row = logits[i].float() * scale
+                ent[i] = torch.logsumexp(row, -1) - (torch.softmax(row, -1) * row).sum(-1)
+    return lp, ent
 
 
 def _schedule(kind: str, total: int, warmup: int):

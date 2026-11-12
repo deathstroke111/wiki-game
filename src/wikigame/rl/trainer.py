@@ -96,27 +96,24 @@ class RLTrainer:
         total_tokens = sum(len(c) for _, c, _, _ in seqs)
         norm = dict(total_tokens=total_tokens, total_seqs=len(seqs), max_completion=cfg.max_completion)
         sampler_lp = all(lp is not None for *_, lp in seqs)
-        need_old = cfg.updates_per_batch > 1 or sampler_lp
+        # a separate no-grad pass for the "old" log-probs only when the batch is reused: with one update, old = the
+        # training pass's own detached log-probs, so the ratio is exactly 1 (a second pass differs by LoRA dropout)
         old: list[torch.Tensor | None] = [None] * len(chunks)
         m: dict[str, float] = {}
-        if need_old:
-            diff_sum = 0.0
+        if cfg.updates_per_batch > 1:
             with torch.no_grad():
                 for k, ch in enumerate(chunks):
-                    lp, mask, _ = L.token_logprobs([p for p, *_ in ch], [c for _, c, *_ in ch])
-                    old[k] = lp.detach()
-                    if sampler_lp:
-                        s = _pad([x for *_, x in ch], lp.shape[1], lp.device)
-                        diff_sum += float(((lp - s).abs() * mask).sum())
-            if sampler_lp:
-                m["sampler/logprob_abs_diff"] = diff_sum / max(1, total_tokens)
+                    old[k] = L.token_logprobs([p for p, *_ in ch], [c for _, c, *_ in ch])[0].detach()
         sums = {"loss": 0.0, "ratio_sum": 0.0, "clip_low_sum": 0.0, "clip_high_sum": 0.0, "entropy_sum": 0.0,
-                "tis_clipped": 0.0}
+                "tis_clipped": 0.0, "lp_diff": 0.0}
         last = {}
         for it in range(cfg.updates_per_batch):
             for k, ch in enumerate(chunks):
                 lp, mask, ent = L.token_logprobs([p for p, *_ in ch], [c for _, c, *_ in ch], with_entropy=it == 0)
                 ref = old[k] if old[k] is not None else lp.detach()
+                if it == 0 and sampler_lp:  # trainer vs sampler (vLLM) log-probs of the same tokens
+                    s = _pad([x for *_, x in ch], lp.shape[1], lp.device)
+                    sums["lp_diff"] += float(((ref - s).abs() * mask).sum())
                 a = torch.tensor([x for _, _, x, _ in ch], device=lp.device)
                 tok_loss, st = per_token_loss(alg, lp, ref, a, mask)
                 if cfg.tis_cap and sampler_lp:
@@ -139,6 +136,8 @@ class RLTrainer:
                   "clip_ratio/region_mean": (sums["clip_low_sum"] + sums["clip_high_sum"]) / n_tok,
                   "grad_norm": last.get("grad_norm", 0.0), "learning_rate": last.get("lr", 0.0),
                   "train/sequences": len(seqs), "train/tokens": total_tokens})
+        if sampler_lp:
+            m["sampler/logprob_abs_diff"] = sums["lp_diff"] / max(1, total_tokens)
         if cfg.tis_cap and sampler_lp:
             m["sampler/tis_clipped_ratio"] = sums["tis_clipped"] / n_tok
         return m
@@ -179,7 +178,12 @@ class RLTrainer:
                   f"invalid {metrics.get('env/invalid_rate', float('nan')):.3f} "
                   f"zero_std {metrics['frac_reward_zero_std']:.2f} len {metrics['completions/mean_length']:.0f} "
                   f"| gen {metrics['time/generate_s']:.1f}s train {metrics['time/train_s']:.1f}s "
-                  f"step {metrics['time/step_s']:.1f}s", flush=True)
+                  f"sync {metrics['time/sync_s']:.1f}s step {metrics['time/step_s']:.1f}s"
+                  + (f" | lp_diff {metrics['sampler/logprob_abs_diff']:.4f}" if "sampler/logprob_abs_diff" in metrics else "")
+                  + (f" | ratio {metrics['ratio_mean']:.3f} clip {metrics['clip_ratio/region_mean']:.3f}"
+                     if "ratio_mean" in metrics else ""), flush=True)
+            with (self.out / "metrics.jsonl").open("a") as f:  # always on disk, W&B or not
+                f.write(json.dumps({"step": self.step, **metrics}) + "\n")
             if self.log_fn:
                 self.log_fn(metrics, self.step)
             if cfg.save_steps and self.step % cfg.save_steps == 0:

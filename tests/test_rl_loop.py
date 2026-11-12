@@ -179,3 +179,50 @@ def test_onpolicy_round_refills_the_pool(graph, tok, tmp_path):
     assert pool[0]["kind"] == "onpolicy" and set(pool[0]) == set(rows[0])
     assert rounds.due(5) and not rounds.due(3)
     assert len((tmp_path / "rounds.jsonl").read_text().splitlines()) == 6
+
+
+def test_playout_return_orders_outcomes():
+    from wikigame.rl.sources import PlayoutReturn
+
+    r = PlayoutReturn()
+    slow_win, fast_win = r.score(True, 10, 3, 0, "success"), r.score(True, 2, 3, 0, "success")
+    near_loss, far_loss = r.score(False, 10, 3, 1, "step_limit"), r.score(False, 10, 3, 3, "step_limit")
+    invalid_loss = r.score(False, 4, 3, 3, "invalid_action")
+    assert fast_win > slow_win >= 0.5 > near_loss > far_loss == 0.0 > invalid_loss
+
+
+def test_playout_source_scores_answers_by_their_finished_games(graph, tok, tmp_path):
+    from wikigame.rl.sources import PlayoutSource
+
+    rows = sample_states(graph, 8, R1, StateMix(hops=(2, 3)), seed=1)
+    # the branching answer alternates oracle / garbage (k even / odd); play-out moves are always the oracle (k = 0)
+    gen = ScriptedGenerator(tok, oracle_or_garbage(graph, tok))
+    src = PlayoutSource(StatePool(rows, share=0.0, seed=0), graph, tok, gen, num_generations=4, max_tokens=64,
+                        temperature=1.0, model_id=R1, hint=None)
+    groups, m = src.next_batch(2)
+    assert len(groups) == 2 and all(len(g.rewards) == 4 for g in groups)
+    assert m["playout/success"] == 1.0 and m["env/invalid_rate"] == 0.5 and m["playout/calls"] >= 1
+    for g in groups:  # a garbage first answer wastes a move, so its (won) game scores lower
+        assert g.rewards[0] > g.rewards[1] and g.rewards[2] > g.rewards[3]
+    tr, L, _, _ = make(graph, tok, tmp_path)
+    tr.source = src
+    m2 = tr.train_step()
+    assert m2["reward_std"] > 0 and m2["grad_norm"] > 0
+
+
+def test_selective_logprobs_match_log_softmax_in_value_and_gradient():
+    from wikigame.rl.learner import selective_logprobs
+
+    torch.manual_seed(0)
+    logits = torch.randn(3, 5, 17, dtype=torch.float64, requires_grad=True)
+    targets = torch.randint(0, 17, (3, 5))
+    w = torch.randn(3, 5, dtype=torch.float64)
+    ref = torch.log_softmax(logits / 0.7, -1).gather(-1, targets[..., None]).squeeze(-1)
+    (ref * w).sum().backward()
+    g_ref = logits.grad.clone()
+    logits.grad = None
+    lp, ent = selective_logprobs(logits, targets, 1 / 0.7, with_entropy=True)
+    (lp * w).sum().backward()
+    assert torch.allclose(lp.double(), ref, atol=1e-5) and torch.allclose(logits.grad, g_ref, atol=1e-5)
+    p = torch.softmax(logits.detach() / 0.7, -1)
+    assert torch.allclose(ent.double(), -(p * p.log()).sum(-1), atol=1e-4)
