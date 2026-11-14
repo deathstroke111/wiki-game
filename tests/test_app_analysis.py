@@ -231,3 +231,16 @@ def test_reward_breakdown_reconciles_with_ranked_invalid_tiers(graph):
     ep = run_episode(WikiGameEnv(graph, reward=rc, max_invalid=5, seed=0), pol, options={"source": 0, "target": 7}).to_dict()
     assert {s["cause"] for s in ep["steps"] if not s["valid"]} == {"unparseable", "unknown_title", "current_page"}
     assert reward_breakdown([ep], vars(rc)).residual.abs().max() < 1e-9
+
+
+def test_own_trainer_history_gets_trl_layout():
+    import pandas as pd
+    from wikigame.webapp.data import normalize_own_trainer_history
+
+    old = pd.DataFrame({"_step": [1, 2], "reward": [0.1, 0.2], "env/invalid_rate": [0.3, 0.2], "train/tokens": [5, 6]})
+    out = normalize_own_trainer_history(old)
+    assert {"train/reward", "train/env/invalid_rate", "train/tokens", "_step"} <= set(out.columns)
+    assert "train/train/tokens" not in out and "reward" not in out
+    assert out["train/global_step"].tolist() == [1, 2]
+    new = pd.DataFrame({"_step": [1], "train/reward": [0.1], "train/global_step": [7]})  # already prefixed: untouched
+    assert normalize_own_trainer_history(new).equals(new)

@@ -188,7 +188,10 @@ def main() -> None:
     if not a.no_wandb:
         run = init_run(experiment, "train", run_cfg, graph, a.graph_name,
                        tags=["rl", a.algo, f"backend:{backend}", f"source:{a.source}", f"stage:{a.stage}"], group="rl-loop")
-        log_fn = lambda m, step: run.log(m, step=step)  # noqa: E731
+        # train/ prefix + train/global_step: the same layout as the TRL runs, so W&B and the app compare them
+        log_fn = lambda m, step: run.log(  # noqa: E731
+            {**{k if k.startswith("train/") else f"train/{k}": v for k, v in m.items()}, "train/global_step": step},
+            step=step)
     trainer = RLTrainer(learner, gen, source, alg, cfg, rounds=rounds, log_fn=log_fn)
     trainer.run()
     (out / "wikigame_config.json").write_text(json.dumps(run_cfg, indent=2, default=str))

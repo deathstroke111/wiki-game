@@ -63,6 +63,20 @@ def load_local_graph(name: str | None) -> WikiGraph | None:
     return WikiGraph.load(p) if p.exists() else None
 
 
+OWN_TRAINER = "wikigame.rl"  # config.trainer of scripts/rl_train.py runs (TRL runs say "trl.GRPOTrainer")
+
+
+def normalize_own_trainer_history(df: pd.DataFrame) -> pd.DataFrame:
+    """Give an own-trainer (scripts/rl_train.py) history the layout of a TRL one, which the pages expect:
+    metrics under ``train/`` and the optimizer step in ``train/global_step``. Runs up to stage 5 logged bare
+    names (``reward``, ``env/invalid_rate``) with the step only in W&B's ``_step``; later runs log the prefix
+    themselves, so already-prefixed columns are left alone."""
+    df = df.rename(columns={c: f"train/{c}" for c in df.columns if not c.startswith(("train/", "eval/", "_"))})
+    if "train/global_step" not in df and "_step" in df:
+        df = df.assign(**{"train/global_step": df["_step"]})
+    return df
+
+
 def _machine_of(tags: list[str], config: dict) -> str:
     for t in tags:
         if t.startswith("machine:"):
@@ -98,7 +112,10 @@ class WandbSource:
             return df
         # drop table/media columns (dicts) - keep numeric metrics and the step
         keep = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-        return df[keep]
+        df = df[keep]
+        if run.config.get("trainer") == OWN_TRAINER:
+            df = normalize_own_trainer_history(df)
+        return df
 
     def _artifacts(self, run_id: str):
         run = self.api.run(f"{self.path}/{run_id}")
