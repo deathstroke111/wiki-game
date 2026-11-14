@@ -191,6 +191,30 @@ def test_playout_return_orders_outcomes():
     assert fast_win > slow_win >= 0.5 > near_loss > far_loss == 0.0 > invalid_loss
 
 
+def test_move_bonus_is_signed_and_off_by_default():
+    from wikigame.rl.sources import PlayoutReturn
+
+    assert PlayoutReturn().bonus("closer") == 0.0
+    r = PlayoutReturn(move_bonus=0.2)
+    assert (r.bonus("closer"), r.bonus("farther"), r.bonus("sideways"), r.bonus("invalid")) == (0.2, -0.2, 0.0, 0.0)
+
+
+def test_move_bonus_adds_to_the_playout_score(graph, tok):
+    from wikigame.rl.sources import PlayoutReturn, PlayoutSource
+
+    rows = sample_states(graph, 8, R1, StateMix(hops=(2, 3)), seed=1)
+    scores = {}
+    for b in (0.0, 0.2):
+        gen = ScriptedGenerator(tok, oracle_or_garbage(graph, tok))  # oracle (closer) / garbage (invalid) answers
+        src = PlayoutSource(StatePool(rows, share=0.0, seed=0), graph, tok, gen, num_generations=4, max_tokens=64,
+                            temperature=1.0, model_id=R1, hint=None, returns=PlayoutReturn(move_bonus=b))
+        groups, m = src.next_batch(2)
+        scores[b] = [r for g in groups for r in g.rewards]
+    # same scripted games both times: oracle answers (even) gain exactly 0.2, invalid ones (odd) nothing
+    assert [round(y - x, 6) for x, y in zip(scores[0.0], scores[0.2])] == [0.2, 0.0] * 4
+    assert m["playout/bonus_mean"] == pytest.approx(0.1) and "playout/return_mean" in m
+
+
 def test_playout_source_scores_answers_by_their_finished_games(graph, tok, tmp_path):
     from wikigame.rl.sources import PlayoutSource
 

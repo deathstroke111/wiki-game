@@ -66,6 +66,8 @@ def main() -> None:
     ap.add_argument("--move-cost", type=float, default=0.05, help="playout: a win scores 1 - this x moves used")
     ap.add_argument("--loss-credit", type=float, default=0.3,
                     help="playout: a loss scores this x the share of the distance to the target it closed")
+    ap.add_argument("--move-bonus", type=float, default=0.0,
+                    help="playout: + this if the trained answer moved closer, - this if farther (0 = stages 5/5b)")
     ap.add_argument("--invalid-end-penalty", type=float, default=0.3,
                     help="playout: subtracted from a loss that ended on too many invalid answers")
     ap.add_argument("--playout-lenient", action="store_true",
@@ -162,7 +164,7 @@ def main() -> None:
 
     if a.source == "playout":
         returns = PlayoutReturn(move_cost=a.move_cost, loss_credit=a.loss_credit,
-                                invalid_end_penalty=a.invalid_end_penalty)
+                                invalid_end_penalty=a.invalid_end_penalty, move_bonus=a.move_bonus)
         source = PlayoutSource(pool, graph, learner.tok, gen, num_generations=a.num_generations,
                                max_tokens=a.max_completion, temperature=a.temperature, model_id=a.model, hint=hint,
                                max_steps_game=a.max_steps_game, feedback=a.feedback, lenient=a.playout_lenient,

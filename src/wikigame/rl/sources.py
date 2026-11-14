@@ -72,10 +72,19 @@ class PlayoutReturn:
             10-move cap a win never scores below 0.5
       loss  loss_credit x share of the branch position's distance to the target closed by where the game ended
             (0 if it ended no closer), minus invalid_end_penalty if it ended on too many invalid answers
-    Every win outscores every loss (0.5 > 0.3)."""
+    Every win outscores every loss (0.5 > 0.3) when move_bonus is 0.
+
+      move_bonus (stage 5c, default 0 = stages 5/5b): + this if the branching answer itself moved closer by graph
+            distance, - this if it moved farther, 0 if sideways or invalid (an invalid answer already costs a move in
+            its play-out). A per-move signal that does not depend on one noisy play-out; with move_bonus >= 0.1 a
+            good move whose play-out lost can outrank a bad move whose play-out won."""
     move_cost: float = 0.05
     loss_credit: float = 0.3
     invalid_end_penalty: float = 0.3
+    move_bonus: float = 0.0
+
+    def bonus(self, moved: str) -> float:
+        return {"closer": self.move_bonus, "farther": -self.move_bonus}.get(moved, 0.0)
 
     def score(self, success: bool, moves: int, d0: int | None, d_final: int | None, end_reason: str) -> float:
         if success:
@@ -155,14 +164,17 @@ class PlayoutSource:
                 self._step(g, text)
             running = [g for g in running if not g["done"]]
         play_s = time.time() - t1
-        groups, rets = [], []
+        groups, rets, parts = [], [], []
         for gi, (row, (ids, _), samples) in enumerate(zip(rows, enc, out)):
             mine = [g for g in games if g["group"] == gi]
             rs = []
             for g in mine:
                 env = g["env"]
                 d_final = self.dist(row["target"]).get(env.cur)
-                rs.append(self.returns.score(g["success"], g["moves"], g["d0"], d_final, g["end"]))
+                ret = self.returns.score(g["success"], g["moves"], g["d0"], d_final, g["end"])
+                bonus = self.returns.bonus(_moved(g))
+                rs.append(ret + bonus)
+                parts.append((ret, bonus))
             groups.append(Group(row, ids, samples, [g["text"] for g in mine], rs))
             rets += rs
         n = len(games)
@@ -174,6 +186,8 @@ class PlayoutSource:
                    "env/invalid_rate": sum(not i["valid"] for i in branch_infos) / n,
                    "env/closer_rate": sum(_moved(g) == "closer" for g in games) / n,
                    "env/sideways_rate": sum(_moved(g) == "sideways" for g in games) / n,
+                   "playout/return_mean": sum(r for r, _ in parts) / n,  # the play-out score alone (= reward in 5/5b)
+                   "playout/bonus_mean": sum(b for _, b in parts) / n,
                    "onpolicy/drawn_this_step": sum(r["kind"] == "onpolicy" for r in rows) / len(rows)}
         for cause, k in Counter(i["cause"] for i in branch_infos if i.get("cause")).items():
             metrics[f"env/invalid/{cause}"] = k / n
