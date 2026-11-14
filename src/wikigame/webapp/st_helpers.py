@@ -5,9 +5,11 @@ import pandas as pd
 import streamlit as st
 
 from ..graph import WikiGraph
+from .analysis import uses_hf_generation
 from .data import DataSource, EpisodeSet, RunInfo, get_source
 
 TTL = 30  # seconds
+HF_STATE = "_include_hf_runs"  # survives page switches (widget keys are per page)
 
 
 @st.cache_resource
@@ -16,8 +18,19 @@ def source() -> DataSource:
 
 
 @st.cache_data(ttl=TTL, show_spinner="Loading runs from W&B…")
-def runs() -> list[RunInfo]:
+def all_runs() -> list[RunInfo]:
     return source().list_runs()
+
+
+def include_hf_runs() -> bool:
+    return bool(st.session_state.get(HF_STATE, False))
+
+
+def runs() -> list[RunInfo]:
+    """Runs the pages show: vLLM-generated model runs plus model-free ones; HF-generated model runs only when the
+    sidebar toggle asks for them (their histories and episodes are never fetched otherwise)."""
+    rs = all_runs()
+    return rs if include_hf_runs() else [r for r in rs if not uses_hf_generation(r)]
 
 
 @st.cache_data(ttl=TTL, show_spinner="Loading run history…")
@@ -41,9 +54,14 @@ def graph(name: str | None) -> WikiGraph | None:
 
 
 def refresh_button() -> None:
+    """Sidebar controls every run-based page shows: refresh, and whether HF-generated model runs are loaded."""
     if st.sidebar.button("🔄 Refresh from W&B", width="stretch"):
         st.cache_data.clear()
         st.rerun()
+    st.session_state[HF_STATE] = st.sidebar.toggle(
+        "Include HF-generation runs", value=include_hf_runs(), key="include_hf_toggle",
+        help="Off: only model runs generated with vLLM (plus random / oracle / human). HF evals of trained adapters "
+             "were under-measured (bf16 LoRA merge); stages 1-4 training ran on TRL with HF generation.")
 
 
 def available_graphs() -> list[str]:

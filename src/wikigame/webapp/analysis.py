@@ -349,6 +349,14 @@ def policy_label(run: RunInfo) -> str:
     return run.group or run.name
 
 
+def uses_hf_generation(run: RunInfo) -> bool:
+    """A model run (LLM eval/baseline or training) whose answers came from HF generate, not vLLM. HF evals of
+    trained adapters merged the LoRA into bf16 weights and under-measured them (2026-11-12), so the app hides these
+    runs by default. Runs without a model (random, oracle, human, handoff) never count."""
+    is_model_run = "llm" in run.tags or run.job_type == "train"
+    return is_model_run and "backend:vllm" not in run.tags
+
+
 def has_hop_results(run: RunInfo) -> bool:
     return any(HOP_METRIC.match(k) and HOP_METRIC.match(k)["name"] == "success" for k in run.summary)
 

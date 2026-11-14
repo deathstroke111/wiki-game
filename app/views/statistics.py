@@ -39,7 +39,8 @@ def compare_cached(_wide, wide_key: str, pairs: tuple, hop) -> pd.DataFrame:
 
 
 def short(agent: str) -> str:
-    return agent.replace("grpo-step-r1-", "").replace("zeroshot-", "").replace("-1.5b", "").replace("-instruct", "")
+    return (agent.replace("grpo-step-r1-", "").replace("rl-trl-dapo-playout-r1-", "playout-").replace("zeroshot-", "")
+            .replace("-1.5b", "").replace("-instruct", ""))
 
 
 def rate_cell(row) -> str:
@@ -137,7 +138,7 @@ if section == "Stage comparison":
                                     "p_holm": st.column_config.NumberColumn("Holm p", format="%.3f")})
         st.caption("Intervals resample games within each hop. The exact test uses only games the two agents split.")
 
-        ladder = sorted((a for a in picked if S.ladder_key(a) is not None), key=S.ladder_key)
+        ladder = S.training_ladder(picked)
         latest_step = pairs[len(ladder) - 2]  # planned_pairs lists the ladder steps first, in training order
         if len(ladder) >= 2:
             st.subheader("Each stage against the untrained model, controlling for the game")
@@ -218,7 +219,8 @@ elif section == "Training process":
         stage = stage_of(r)
         end = S.first_last_change(histories[r.id], TRAIN_METRICS)
         late = dict(zip(end.metric, end["last"])) if not end.empty else {}
-        match = next((a for a in names if a.endswith(f"stage{stage}-final")), None)
+        finals = [a for a in names if a.endswith((f"stage{stage}-final", f"stage{stage}-final-vllm"))]
+        match = max(finals, key=lambda a: a.endswith("-vllm"), default=None)  # the vLLM eval when both are shown
         held = pool[match].summary if match else {}
         rows.append({"stage": stage, "steps": len(S.per_step(histories[r.id], "train/env/invalid_rate")),
                      "token cap": r.config.get("max_completion"), "train hops": str(r.config.get("hops")),

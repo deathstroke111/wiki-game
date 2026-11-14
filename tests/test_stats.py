@@ -62,6 +62,15 @@ def test_planned_pairs_follow_training_order_regardless_of_input_order():
     assert stats.planned_pairs(["random", "oracle"]) == []
 
 
+def test_ladder_reads_vllm_names_and_prefers_them_over_hf_evals_of_the_same_adapter():
+    hf4, v4 = "grpo-step-r1-stage4-final", "grpo-step-r1-stage4-final-vllm"
+    a0, v5, v5b = "zeroshot-r1-1.5b-lenient-vllm", "rl-trl-dapo-playout-r1-stage5-final-vllm", \
+        "rl-trl-dapo-playout-r1-stage5b-final-vllm"
+    m5 = "rl-trl-dapo-playout-r1-stage5-step100-vllm"
+    assert stats.training_ladder([v5b, hf4, v5, a0, v4, m5]) == [a0, v4, m5, v5, v5b]
+    assert stats.planned_pairs([v5b, v5, a0, v4]) == [(v4, a0), (v5, v4), (v5b, v5), (v5b, a0)]
+
+
 def test_conditional_logit_recovers_direction():
     # 'b' beats 'a' in 15 split games and loses 5, so the conditional odds ratio is exactly 15 / 5.
     a = [ep(1, "A", str(i), i >= 15) for i in range(20)] + [ep(1, "A", f"t{i}", i % 2 == 0) for i in range(10)]

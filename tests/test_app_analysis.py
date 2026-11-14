@@ -242,5 +242,23 @@ def test_own_trainer_history_gets_trl_layout():
     assert {"train/reward", "train/env/invalid_rate", "train/tokens", "_step"} <= set(out.columns)
     assert "train/train/tokens" not in out and "reward" not in out
     assert out["train/global_step"].tolist() == [1, 2]
+    bug = normalize_own_trainer_history(pd.DataFrame({"_step": [1, 2], "env/closer_rate": [0.0, 0.0]}))
+    assert "train/env/closer_rate" not in bug  # the pre-fix constant-0 metric is dropped, a real one is kept
+    assert "train/env/closer_rate" in normalize_own_trainer_history(pd.DataFrame({"_step": [1], "env/closer_rate": [0.3]}))
     new = pd.DataFrame({"_step": [1], "train/reward": [0.1], "train/global_step": [7]})  # already prefixed: untouched
     assert normalize_own_trainer_history(new).equals(new)
+
+
+def test_hf_generation_runs_are_model_runs_without_the_vllm_tag():
+    from wikigame.webapp.analysis import uses_hf_generation
+    from wikigame.webapp.data import RunInfo
+
+    def r(job, tags):
+        return RunInfo("i", "n", "cuda", "g", job, "finished", tags, "", {}, {})
+    assert uses_hf_generation(r("eval", ["llm", "grpo-eval"]))  # HF eval of an adapter
+    assert uses_hf_generation(r("baseline", ["llm", "zero-shot"]))  # HF zero-shot
+    assert uses_hf_generation(r("train", ["grpo", "stage:4"]))  # TRL training, HF generation
+    assert not uses_hf_generation(r("eval", ["llm", "backend:vllm"]))
+    assert not uses_hf_generation(r("train", ["rl", "backend:vllm"]))
+    assert not uses_hf_generation(r("baseline", ["smoke"]))  # random / oracle: no model
+    assert not uses_hf_generation(r("human", ["human"]))

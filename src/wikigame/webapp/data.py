@@ -74,7 +74,9 @@ def normalize_own_trainer_history(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns={c: f"train/{c}" for c in df.columns if not c.startswith(("train/", "eval/", "_"))})
     if "train/global_step" not in df and "_step" in df:
         df = df.assign(**{"train/global_step": df["_step"]})
-    return df
+    # playout runs before 39487e7 logged closer/sideways as a constant 0 (their envs had no shaping): not a measurement
+    dead = [c for c in ("train/env/closer_rate", "train/env/sideways_rate") if c in df and not df[c].fillna(0).any()]
+    return df.drop(columns=dead)
 
 
 def _machine_of(tags: list[str], config: dict) -> str:

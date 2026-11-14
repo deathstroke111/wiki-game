@@ -17,19 +17,20 @@ from .analysis import step_causes, wilson_interval
 
 GAME_KEYS = ["n_hops", "source", "target"]
 
-_STAGE = re.compile(r"stage(?P<num>\d+)(?P<sub>[a-z]?)-(?:step(?P<step>\d+)|final)$")
+_STAGE = re.compile(r"stage(?P<num>\d+)(?P<sub>[a-z]?)-(?:step(?P<step>\d+)|final)(?P<vllm>-vllm)?$")
 
 
 # ---- agent ordering --------------------------------------------------------------------------------------
 def ladder_key(agent: str) -> tuple | None:
     """Training order of an R1 agent: the untrained model first, then stage, sub-stage, step (final last).
     None for agents that are not on the R1 training ladder."""
+    vllm = int(agent.endswith("-vllm"))  # an HF and a vLLM eval of the same adapter: HF first
     if agent.startswith("zeroshot-r1"):
-        return (0, "", 0)
+        return (0, "", 0, vllm)
     m = _STAGE.search(agent)
     if not m:
         return None
-    return (int(m["num"]), m["sub"], int(m["step"]) if m["step"] else math.inf)
+    return (int(m["num"]), m["sub"], int(m["step"]) if m["step"] else math.inf, vllm)
 
 
 def agent_sort_key(agent: str) -> tuple:
@@ -42,10 +43,19 @@ def agent_sort_key(agent: str) -> tuple:
     return (0 if "random" in agent else 1, (), agent)
 
 
+def training_ladder(agents: list[str]) -> list[str]:
+    """The R1 agents in training order, one per stage/step: the vLLM eval when an HF one of the same adapter is
+    also present (HF evals of adapters were under-measured)."""
+    best: dict[tuple, str] = {}
+    for a in sorted((a for a in agents if ladder_key(a) is not None), key=ladder_key):
+        best[ladder_key(a)[:3]] = a  # sorted HF before vLLM, so the vLLM eval wins
+    return list(best.values())
+
+
 def planned_pairs(agents: list[str]) -> list[tuple[str, str]]:
     """The comparisons fixed in advance, as (later, earlier): each ladder step, final vs untrained, and
     final vs zero-shot Qwen (lenient parsing, like the R1 evals)."""
-    ladder = sorted((a for a in agents if ladder_key(a) is not None), key=ladder_key)
+    ladder = training_ladder(agents)
     if not ladder:
         return []
     pairs = [(b, a) for a, b in zip(ladder, ladder[1:])]
