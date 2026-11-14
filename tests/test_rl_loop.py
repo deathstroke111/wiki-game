@@ -202,6 +202,10 @@ def test_playout_source_scores_answers_by_their_finished_games(graph, tok, tmp_p
     groups, m = src.next_batch(2)
     assert len(groups) == 2 and all(len(g.rewards) == 4 for g in groups)
     assert m["playout/success"] == 1.0 and m["env/invalid_rate"] == 0.5 and m["playout/calls"] >= 1
+    # oracle answers always move closer, garbage ones are invalid (closer was always 0 before 2026-11-14)
+    assert m["env/closer_rate"] == 0.5 and m["env/sideways_rate"] == 0.0
+    assert sum(m[f"env/{d}/share"] for d in ("d1", "d2", "d3", "d4p")) == pytest.approx(1.0)
+    assert all(m[k] == 0.5 for k in m if k.endswith("/closer_rate") and k.startswith("env/d"))
     for g in groups:  # a garbage first answer wastes a move, so its (won) game scores lower
         assert g.rewards[0] > g.rewards[1] and g.rewards[2] > g.rewards[3]
     tr, L, _, _ = make(graph, tok, tmp_path)

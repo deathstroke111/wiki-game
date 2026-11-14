@@ -142,6 +142,7 @@ class PlayoutSource:
                         "end": "", "text": restore_think(s.text, opened),
                         "d0": self.dist(row["target"]).get(row["path"][-1])}
                 self._step(game, game["text"])  # the branching move: the answer being trained
+                game["d1"] = self.dist(row["target"]).get(env.cur) if game["infos"][0]["valid"] else None
                 games.append(game)
         branch_infos = [g["infos"][0] for g in games]
         generate = chat_batch_generate(self.gen, self.tok, self.max_tokens, self.temperature)
@@ -171,15 +172,32 @@ class PlayoutSource:
                    "playout/moves_mean": sum(g["moves"] for g in games) / n,
                    **{f"playout/end_{k}": ends.get(k, 0) / n for k in ("success", "invalid_action", "step_limit", "dead_end")},
                    "env/invalid_rate": sum(not i["valid"] for i in branch_infos) / n,
-                   "env/closer_rate": sum(i.get("progress", 0) > 0 for i in branch_infos) / n,
-                   "env/sideways_rate": sum(i["valid"] and i.get("progress") == 0 for i in branch_infos) / n,
+                   "env/closer_rate": sum(_moved(g) == "closer" for g in games) / n,
+                   "env/sideways_rate": sum(_moved(g) == "sideways" for g in games) / n,
                    "onpolicy/drawn_this_step": sum(r["kind"] == "onpolicy" for r in rows) / len(rows)}
         for cause, k in Counter(i["cause"] for i in branch_infos if i.get("cause")).items():
             metrics[f"env/invalid/{cause}"] = k / n
+        for label, sel in (("d1", lambda d: d == 1), ("d2", lambda d: d == 2), ("d3", lambda d: d == 3),
+                           ("d4p", lambda d: d is not None and d >= 4)):  # same keys as the TRL step-reward runs
+            mine = [g for g in games if sel(g["d0"])]
+            metrics[f"env/{label}/share"] = len(mine) / n
+            if mine:
+                metrics[f"env/{label}/closer_rate"] = sum(_moved(g) == "closer" for g in mine) / len(mine)
+                metrics[f"env/{label}/invalid_rate"] = sum(not g["infos"][0]["valid"] for g in mine) / len(mine)
         win = [g["moves"] for g in games if g["success"]]
         if win:
             metrics["playout/moves_to_win"] = sum(win) / len(win)
         return groups, metrics
+
+
+def _moved(game: dict) -> str:
+    """What the branching move did, from graph distances (the playout envs have no shaping, so no `progress`)."""
+    if not game["infos"][0]["valid"]:
+        return "invalid"
+    d0, d1 = game["d0"], game["d1"]
+    if d0 is None or d1 is None or d1 > d0:
+        return "farther"
+    return "closer" if d1 < d0 else "sideways"
 
 
 class OnPolicyRounds:
