@@ -18,7 +18,7 @@ LORA_DEFAULTS = dict(lora_dropout=0.05, target_modules="all-linear", task_type="
 
 class Learner:
     def __init__(self, model_id: str, *, adapter: str | None = None, lora_r: int = 16, lr: float = 1e-5,
-                 total_updates: int = 1, lr_schedule: str = "linear", warmup_updates: int = 0,
+                 total_updates: int = 1, lr_schedule: str = "linear", warmup_updates: int = 0, min_lr_ratio: float = 0.0,
                  temperature: float = 1.0, dtype: torch.dtype | None = None, device: str | None = None,
                  grad_checkpointing: bool = True, max_grad_norm: float = 1.0, weight_decay: float = 0.0,
                  model=None, tok=None):
@@ -51,7 +51,7 @@ class Learner:
         params = [p for p in self.model.parameters() if p.requires_grad]
         self.opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay,
                                      fused=self.device.type == "cuda")
-        self.sched = torch.optim.lr_scheduler.LambdaLR(self.opt, _schedule(lr_schedule, total_updates, warmup_updates))
+        self.sched = torch.optim.lr_scheduler.LambdaLR(self.opt, _schedule(lr_schedule, total_updates, warmup_updates, min_lr_ratio))
         self.updates = 0
 
     # ---- log-probs ---------------------------------------------------------------------------------------------
@@ -157,18 +157,21 @@ def selective_logprobs(logits: torch.Tensor, targets: torch.Tensor, scale: float
     return lp, ent
 
 
-def _schedule(kind: str, total: int, warmup: int):
+def _schedule(kind: str, total: int, warmup: int, min_ratio: float = 0.0):
+    """LR multiplier per update: linear warm-up, then linear/cosine decay from 1 to `min_ratio` (0 = to zero)."""
     total = max(1, total)
+    if not 0.0 <= min_ratio <= 1.0:
+        raise ValueError(f"min_lr_ratio must be in [0, 1], got {min_ratio}")
 
     def f(i: int) -> float:
         if warmup and i < warmup:
             return (i + 1) / warmup
         if kind == "constant":
             return 1.0
-        frac = (i - warmup) / max(1, total - warmup)
+        frac = min(1.0, (i - warmup) / max(1, total - warmup))
         if kind == "cosine":
-            return 0.5 * (1 + math.cos(math.pi * min(1.0, frac)))
-        return max(0.0, 1.0 - frac)  # linear decay to 0, the TRL default every stage so far used
+            return min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * frac))
+        return min_ratio + (1 - min_ratio) * (1.0 - frac)  # linear decay, the TRL default every stage so far used
     if kind not in ("linear", "constant", "cosine"):
         raise ValueError(f"unknown lr schedule {kind!r}")
     return f

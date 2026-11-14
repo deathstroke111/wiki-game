@@ -214,6 +214,20 @@ def test_playout_source_scores_answers_by_their_finished_games(graph, tok, tmp_p
     assert m2["reward_std"] > 0 and m2["grad_norm"] > 0
 
 
+def test_lr_schedule_warmup_cosine_and_floor():
+    from wikigame.rl.learner import _schedule
+
+    f = _schedule("cosine", 300, 10, 0.1)
+    assert f(0) == pytest.approx(0.1) and f(9) == pytest.approx(1.0)  # linear warm-up over 10 updates
+    assert f(10) == pytest.approx(1.0) and f(155) == pytest.approx(0.55)  # cosine midpoint: halfway to the floor
+    assert f(299) == pytest.approx(0.1, abs=1e-3) and f(400) == pytest.approx(0.1)  # never below the floor
+    assert all(f(i) >= f(i + 1) for i in range(10, 299))
+    lin = _schedule("linear", 300, 0)  # the stage 1-5 default is unchanged: 1 -> 0
+    assert lin(0) == 1.0 and lin(150) == pytest.approx(0.5) and lin(300) == 0.0
+    with pytest.raises(ValueError):
+        _schedule("cosine", 300, 0, 1.5)
+
+
 def test_selective_logprobs_match_log_softmax_in_value_and_gradient():
     from wikigame.rl.learner import selective_logprobs
 

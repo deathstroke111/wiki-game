@@ -85,6 +85,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-5)
     ap.add_argument("--lr-schedule", default="linear", choices=["linear", "constant", "cosine"])
     ap.add_argument("--warmup", type=int, default=0, help="warm-up optimizer updates")
+    ap.add_argument("--min-lr-ratio", type=float, default=0.0,
+                    help="linear/cosine decay ends at this fraction of --lr (0 = decay to zero, as stages 1-5)")
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--no-grad-checkpointing", action="store_true")
@@ -151,7 +153,7 @@ def main() -> None:
         print(f"vLLM ready in {gen.startup_seconds:.0f}s", flush=True)
     learner = Learner(a.model, adapter=a.resume_adapter, lora_r=a.lora_r, lr=a.lr,
                       total_updates=a.max_steps * a.updates_per_batch, lr_schedule=a.lr_schedule,
-                      warmup_updates=a.warmup, temperature=a.temperature, max_grad_norm=a.max_grad_norm,
+                      warmup_updates=a.warmup, min_lr_ratio=a.min_lr_ratio, temperature=a.temperature, max_grad_norm=a.max_grad_norm,
                       grad_checkpointing=not a.no_grad_checkpointing)
     if a.resume_optimizer:
         learner.load_optimizer(a.resume_adapter)
