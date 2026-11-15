@@ -110,3 +110,61 @@ def test_value_training_lowers_the_loss(wiki, tok):
     assert loss.item() < 0.8 * first  # measured: 1.61 -> ~1.18, accuracy 0.6 -> 0.9 (tiny random model)
     scores = score_positions(L, tok, wiki, pos, batch=8)
     assert [len(sc) for sc in scores] == [len(p.links) for p in pos] and all(1 <= e <= 5 for sc in scores for e, _ in sc)
+
+
+# ---- step 1: value-ranked play ------------------------------------------------------------------------------
+def _true_value(graph, sign=1.0):
+    cache = {}
+
+    def score(pairs):
+        out = []
+        for x, t in pairs:
+            d = cache.setdefault(t, graph.dist_to(t))
+            out.append(sign * min(d.get(x, 9), 9))
+        return out
+    return score
+
+
+def test_perfect_value_wins_every_game_on_a_shortest_path(wiki):
+    from wikigame.eval import make_pairs
+    from wikigame.value import play_value_games
+
+    pool = make_pairs(wiki, hops=(2, 3, 4), n_per_hop=50)
+    games = [(s, t, k) for k, pl in pool.items() for s, t in pl[:4]]
+    eps = play_value_games(wiki, _true_value(wiki), games, batch_size=5)
+    assert len(eps) == 12 and all(e.success for e in eps)
+    assert sum(e.extra_steps for e in eps) <= 1  # at most a hidden link (200-link cap) costs a detour
+    assert all(e.n_invalid == 0 for e in eps) and [e.n_hops for e in eps] == [k for _, _, k in games]
+    bad = play_value_games(wiki, _true_value(wiki, sign=-1.0), games, batch_size=5)
+    assert sum(e.success for e in bad) <= 2  # always walking away from the target rarely arrives
+
+
+def test_value_choice_clicks_a_linked_target_and_breaks_ties_at_random(wiki):
+    import random as _r
+
+    from wikigame.env import parse_action
+    from wikigame.value import value_choice
+
+    t = 5
+    links = [wiki.titles[x] for x in (1, 2, 3)]
+    title, text = value_choice(wiki, t, links + [wiki.titles[t]], [3.0, 1.0, 2.0, 0.0], _r.Random(0))
+    assert title == wiki.titles[t] and parse_action(text) == title
+    picks = {value_choice(wiki, t, links, [1.0, 1.0, 2.0], _r.Random(s))[0] for s in range(20)}
+    assert picks == {links[0], links[1]}
+
+
+def test_value_scorer_returns_distances_and_caches(wiki, tok):
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    from wikigame.value import ValueScorer
+
+    torch.manual_seed(0)
+    cfg = transformers.Qwen2Config(vocab_size=len(tok), hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                                   num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=4096,
+                                   tie_word_embeddings=True)
+    sc = ValueScorer(wiki, R1, None, device="cpu", batch=4, model=transformers.AutoModelForCausalLM.from_config(cfg),
+                     tok=tok)
+    pairs = [(wiki.adj[0][0], 7), (wiki.adj[0][1], 7), (3, 9)]
+    e = sc(pairs)
+    assert len(e) == 3 and all(1.0 <= v <= 5.0 for v in e) and sc.questions == 3
+    assert sc(pairs[:2]) == e[:2] and sc.questions == 3  # cached: nothing re-scored

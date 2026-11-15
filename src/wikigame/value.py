@@ -9,6 +9,7 @@ Held-out strictness (the user's choice): no training question involves any page 
 """
 from __future__ import annotations
 
+import json
 import math
 import random
 from dataclasses import dataclass
@@ -224,3 +225,104 @@ def ranking_metrics(positions: list[Position], scores: list[list[tuple[float, in
         out[f"positions@{k}"] = n
     out["accuracy"] = acc_k / acc_n if acc_n else float("nan")
     return out
+
+
+# ---- step 1: value-ranked play ------------------------------------------------------------------------------
+class ValueScorer:
+    """Expected distance for (page, target) pairs from a model + LoRA adapter, batched and cached. Has the
+    ``model / tok / device / autocast`` attributes ``class_logits`` expects, so it scores like the trainer does."""
+
+    def __init__(self, graph: WikiGraph, model_id: str, adapter: str | None, *, device: str | None = None,
+                 batch: int = 128, model=None, tok=None):
+        from contextlib import nullcontext
+
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        if device is None:
+            from .llm import pick_device
+            device = pick_device()
+        self.graph, self.batch, self.device = graph, batch, torch.device(device)
+        self.tok = tok or AutoTokenizer.from_pretrained(model_id)
+        if self.tok.pad_token is None:
+            self.tok.pad_token = self.tok.eos_token
+        dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
+        m = model if model is not None else AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
+        if adapter:
+            from peft import PeftModel
+            m = PeftModel.from_pretrained(m, adapter)  # unmerged: a bf16 merge rounds most of a LoRA away
+        self.model = m.to(self.device).eval()
+        self.autocast = torch.autocast("cuda", dtype=torch.bfloat16) if self.device.type == "cuda" else nullcontext()
+        self.class_ids = class_token_ids(self.tok)
+        self.cache: dict[tuple[int, int], float] = {}
+        self.questions = 0
+
+    @torch.no_grad()
+    def __call__(self, pairs: list[tuple[int, int]]) -> list[float]:
+        todo = sorted(set(pairs) - set(self.cache))
+        for i in range(0, len(todo), self.batch):
+            chunk = todo[i:i + self.batch]
+            prompts = [self.tok(prompt_text(self.tok, self.graph, x, t), add_special_tokens=False).input_ids
+                       for x, t in chunk]
+            for key, e in zip(chunk, expected_distance(class_logits(self, prompts, self.class_ids)).tolist()):
+                self.cache[key] = e
+        self.questions += len(todo)
+        return [self.cache[p] for p in pairs]
+
+
+def value_choice(graph: WikiGraph, target: int, links: list[str], scores: list[float], rng: random.Random,
+                 show: int = 3) -> tuple[str, str]:
+    """(chosen title, record text): the target if it is linked, else the link with the lowest expected distance
+    (ties broken at random). The text keeps the top `show` candidates for analysis and parses like a model answer."""
+    if graph.titles[target] in links:
+        title, note = graph.titles[target], "target is linked"
+    else:
+        best = min(scores)
+        title = rng.choice([t for t, s in zip(links, scores) if s == best])
+        ranked = sorted(zip(scores, links))[:show]
+        note = "value-ranked: " + ", ".join(f"{t} ({s:.2f})" for s, t in ranked)
+    return title, f"<think>{note}</think>\n<answer>{json.dumps({'title': title})}</answer>"
+
+
+def play_value_games(graph: WikiGraph, score, games: list[tuple[int, int, int | None]], *, max_steps: int = 10,
+                     batch_size: int = 64, seed: int = 0, on_episode=None):
+    """Play ``games`` = [(source, target, n_hops)] choosing every move by ``score([(page, target), ...]) ->
+    expected distances``. All running games' links are scored in one call per move. Same env, records and seeds as
+    ``parallel.play_games``, so episodes compare game by game with model evals. Returns episodes in input order."""
+    from .env import WikiGameEnv, parse_action
+    from .rollout import EpisodeRecorder
+
+    n = len(games)
+    envs, recs, episodes = [None] * n, [None] * n, [None] * n
+    rngs = [random.Random(seed + i) for i in range(n)]
+    waiting, running = list(range(n)), []
+    while waiting or running:
+        while waiting and len(running) < batch_size:
+            i = waiting.pop(0)
+            s, t, k = games[i]
+            envs[i] = WikiGameEnv(graph, max_steps=max_steps, seed=seed + i)
+            _, info = envs[i].reset(options={"source": s, "target": t})
+            recs[i] = EpisodeRecorder(envs[i], info, k)
+            running.append(i)
+        asks = {i: [(graph.id_of(x), envs[i].target) for x in envs[i].links]
+                for i in running if graph.titles[envs[i].target] not in envs[i].links}
+        flat = score([p for i in asks for p in asks[i]])
+        still, pos = [], 0
+        for i in running:
+            env = envs[i]
+            scores = []
+            if i in asks:
+                scores, pos = flat[pos:pos + len(asks[i])], pos + len(asks[i])
+            if not env.links:  # nothing to click: an invalid answer ends a dead end like a model's would
+                title, text = None, "<think>no links</think>"
+            else:
+                title, text = value_choice(graph, env.target, env.links, scores, rngs[i])
+            _, reward, terminated, truncated, info = env.step(parse_action(text) if title else None)
+            recs[i].record(text, title, reward, info)
+            if terminated or truncated:
+                episodes[i] = recs[i].finish()
+                if on_episode:
+                    on_episode(i, episodes[i])
+            else:
+                still.append(i)
+        running = still
+    return episodes
