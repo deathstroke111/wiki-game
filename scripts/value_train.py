@@ -58,6 +58,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default=None)
     ap.add_argument("--no-wandb", action="store_true")
+    ap.add_argument("--eval-only", action="store_true",
+                    help="score the test and train-target check positions with --adapter and exit (no training, no "
+                         "W&B); e.g. to see whether a step-2 adapter kept the value")
     a = ap.parse_args()
     random.seed(a.seed)
     torch.manual_seed(a.seed)
@@ -95,6 +98,16 @@ def main() -> None:
     class_ids = class_token_ids(tok)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    if a.eval_only:
+        res = {}
+        for name, pos in (("test", test_pos), ("check", check_pos)):
+            m = ranking_metrics(pos, score_positions(L, tok, graph, pos, batch=a.eval_batch))
+            res.update({f"{name}/{k}": v for k, v in m.items()})
+            print(f"[{name}] " + " ".join(f"{k}={v:.3f}" for k, v in m.items() if not k.startswith("positions")), flush=True)
+        (out / "eval-only.json").write_text(json.dumps({"adapter": a.adapter, **res}, indent=2))
+        print(f"eval-only results in {out / 'eval-only.json'}")
+        return
 
     run = None
     if not a.no_wandb:
