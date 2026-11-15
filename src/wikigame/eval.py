@@ -15,7 +15,11 @@ Pairs = dict[int, list[tuple[int, int]]]
 def make_pairs(graph: WikiGraph, hops=(1, 2, 3, 4), n_per_hop: int = 100, seed: int = 1234) -> Pairs:
     """Deterministic eval pairs. Use a seed distinct from training so pairs stay held out."""
     rng = random.Random(seed)
-    return {k: [graph.sample_pair(k, rng) for _ in range(n_per_hop)] for k in hops}
+    # draw every hop from 1 up in a fixed order, then pick the requested ones: a subset such as (2, 3, 4) gets the
+    # same (held-out) pairs as the standard (1, 2, 3, 4) draw. Drawing only the requested hops shifted the random
+    # stream and gave other, non-held-out pairs (the value step-0 side check, 2026-11-15).
+    every = {k: [graph.sample_pair(k, rng) for _ in range(n_per_hop)] for k in range(1, max(hops) + 1)}
+    return {k: every[k] for k in hops}
 
 
 EVAL_POOL = 50  # pairs per hop in the shared held-out set that every baseline/eval script draws from

@@ -168,3 +168,12 @@ def test_value_scorer_returns_distances_and_caches(wiki, tok):
     e = sc(pairs)
     assert len(e) == 3 and all(1.0 <= v <= 5.0 for v in e) and sc.questions == 3
     assert sc(pairs[:2]) == e[:2] and sc.questions == 3  # cached: nothing re-scored
+
+
+def test_eval_pairs_for_a_hop_subset_are_the_standard_held_out_pairs(wiki):
+    from wikigame.eval import EVAL_POOL, make_pairs
+
+    full = make_pairs(wiki, hops=(1, 2, 3, 4), n_per_hop=EVAL_POOL)
+    sub = make_pairs(wiki, hops=(2, 3, 4), n_per_hop=EVAL_POOL)
+    assert all(sub[h] == full[h] for h in (2, 3, 4))
+    assert {p for ps in full.values() for p in ps} == heldout_pairs(wiki)
